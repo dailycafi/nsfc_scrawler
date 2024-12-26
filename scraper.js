@@ -13,6 +13,36 @@ const results = [];
 // 添加全局计数器
 let totalResults = 0;
 
+// 添加黑名单配置
+const BLACKLIST_CODES = [
+  'C0301', 'H0611', 'H2804', 'H0113', 'C1904', 'C1909', 'H3407', 
+  'H1004', 'H2208', 'H2805', 'H3012', 'H1007', 'C1701', 'H3102', 
+  'H2809', 'H1010', 'H1309', 'C1312', 'C1613', 'H1404', 'H2501', 
+  'H1707', 'C0405', 'H3408', 'H3204', 'C0909', 'C1611', 'H2711', 
+  'H0605', 'H1507', 'H3101', 'C1607', 'H2303', 'H2801', 'H3411', 
+  'H1008', 'H0418', 'H3201', 'C0607', 'H0417', 'H0422', 'C0306', 
+  'C0312', 'C0101', 'H3207', 'C0908', 'C1902', 'C0910', 'H1011', 
+  'C2009', 'H3120', 'H2502', 'H3410', 'H2003', 'H3513', 'C0208', 
+  'H1903', 'H2605', 'H2813', 'H1509', 'C1614', 'H0106', 'H2808', 
+  'H1003', 'C0914', 'H0315', 'H2604', 'C1505', 'H1206', 'H3109', 
+  'H0210', 'H3412', 'H2802', 'H3404', 'H3104', 'H0420', 'H1508', 
+  'H0218', 'C1612', 'H3118', 'H3007', 'H1506', 'H0908', 'C1511', 
+  'C1507', 'H2814', 'H0314', 'H1009', 'H3014', 'H0208', 'H0610', 
+  'H3303', 'H1705', 'H3409', 'H3302', 'C0201', 'H2812', 'C0304', 
+  'C1604', 'H0506', 'H2606', 'H1814', 'C0606', 'H0511', 'C1609', 
+  'H2806', 'H0114', 'H0419', 'H1308', 'C0402', 'C0305', 'H1005', 
+  'H0905', 'H1505', 'H3114', 'H0816', 'H3206', 'H0603', 'H3205', 
+  'H0104', 'H0412', 'C1301', 'H2402', 'H0903', 'C1307', 'H1503', 
+  'C1303', 'H2209', 'H0904', 'H0915', 'H1706', 'C1608', 'H2811', 
+  'H1402', 'H3105', 'C1610', 'H0105', 'H0303', 'H0510', 'H1006', 
+  'H0112', 'C0313', 'H0913', 'H3103', 'H0204', 'C0302', 'C1702', 
+  'H0509', 'H0508', 'H3009', 'H2603', 'C1601', 'H3202', 'C1502', 
+  'H0220', 'H1403', 'H0902', 'H1504', 'H1301', 'C1509', 'C0308', 
+  'H1401', 'H3119', 'H0507', 'H2803', 'H0108', 'C0307', 'H3219', 
+  'H1406', 'H3107', 'H3208', 'H3106', 'C1703', 'C1006', 'H3121', 
+  'H2504', 'C1302', 'C1603', 'H2807', 'C1306', 'H3301', 'H1405', 
+  'H3008'];
+
 /** 自定义延时函数 */
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -39,7 +69,14 @@ const CODES = [
 
 // 2) 通用搜索函数
 async function runSearch(page, { year, fundType, code }) {
-  const results = [];
+  // 检查是否在黑名单中
+  if (BLACKLIST_CODES.includes(code)) {
+    console.log(`跳过黑名单代码: ${code}`);
+    return [];
+  }
+
+  let results = [];
+  let treeVisible = false;
   const maxRetries = 3; // 最大重试次数
 
   console.log(`--> runSearch 开始: year=${year}, fundType=${fundType}, code=${code}`);
@@ -111,7 +148,7 @@ async function runSearch(page, { year, fundType, code }) {
       // (D) 申请代码处理
       console.log('准备点击申请代码输入框...');
       
-      let treeVisible = false;
+      treeVisible = false;
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           console.log(`第 ${attempt} 次尝试...`);
@@ -386,24 +423,35 @@ async function scrapeCurrentPage(page, { year, fundType, code }) {
       const items = Array.from(document.querySelectorAll('.info-warp'));
       console.log(`找到 ${items.length} 个结果项`);
       
+      // 用 Set 来存储已处理的批准号，避免重复
+      const processedApproves = new Set();
+      
       return items.map(item => {
         try {
-          // 获取标题 (第一行)
-          const title = item.querySelector('.el-row:first-child .el-col-21 a')?.textContent?.trim() || '';
-          
           // 获取基本信息 (第二行)
           const row2 = item.querySelector('.el-row:nth-child(2)');
           const approveText = row2?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('批准号：', '')?.trim() || '';
+          
+          // 如果这个批准号已经处理过，跳过
+          if (processedApproves.has(approveText)) {
+            return null;
+          }
+          processedApproves.add(approveText);
+
+          // 获取标题 (第一行)
+          const title = item.querySelector('.el-row:first-child .el-col-21 a')?.textContent?.trim() || '';
+          
           const codeText = row2?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('申请代码：', '')?.trim() || '';
           const fundTypeText = row2?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('项目类别：', '')?.trim() || '';
-          const personText = row2?.querySelector('.el-col:nth-child(4) a')?.textContent?.trim() || '';
+          // 修正：正确获取项目负责人
+          const personText = row2?.querySelector('.el-col:nth-child(4)')?.textContent?.replace('项目负责人：', '')?.trim() || '';
           
           // 获取详细信息 (第三行)
           const row3 = item.querySelector('.el-row:nth-child(3)');
           const money = row3?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('资助经费：', '')?.replace('（万元）', '')?.trim() || '';
           const approveYear = row3?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('批准年度：', '')?.trim() || '';
           const endYear = row3?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('结题年度：', '')?.trim() || '';
-          const organization = row3?.querySelector('.el-col:nth-child(4) a')?.textContent?.trim() || '';
+          const organization = row3?.querySelector('.el-col:nth-child(4)')?.textContent?.replace('依托单位：', '')?.trim() || '';
           
           // 获取关键词 (第四行)
           const keywordsText = item.querySelector('.el-row:nth-child(4) .el-col-24')?.textContent || '';
@@ -413,22 +461,22 @@ async function scrapeCurrentPage(page, { year, fundType, code }) {
             searchYear: year,
             searchFund: fundType,
             searchCode: code,
-            title,           // 项目名称
-            approveText,     // 批准号（31670020）
-            codeText,        // 申请代码（C0101）
-            fundTypeText,    // 项目类别（面上项目）
-            personText,      // 项目负责人（刘新展）
-            money,          // 资助经费（60.0）
-            approveYear,     // 批准年度（2016）
-            endYear,        // 结题年度（2020）
-            organization,    // 依托单位（中国科学院微生物研究所）
-            keywords        // 关键词
+            title,
+            approveText,
+            codeText,
+            fundTypeText,
+            personText,
+            money,
+            approveYear,
+            endYear,
+            organization,
+            keywords
           };
         } catch (err) {
           console.error('解析单个项目时出错:', err);
           return null;
         }
-      }).filter(Boolean);
+      }).filter(Boolean); // 过滤掉 null 值
     }, { year, fundType, code });
 
     console.log(`成功抓取到 ${results.length} 条数据`);
