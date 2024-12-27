@@ -18,6 +18,11 @@ class ProxyManager {
         this.lastRotationTime = Date.now();
         this.rotationInterval = 10 * 60 * 1000; // 10分钟
         this.maxRetries = 3; // 最大重试次数
+        
+        // 添加定时器
+        this.rotationTimer = setInterval(() => {
+            this.forceRotateEndpoint();
+        }, this.rotationInterval);
     }
 
     getRandomPort() {
@@ -63,6 +68,7 @@ class ProxyManager {
 
     rotateEndpoint() {
         console.log(`[${new Date().toISOString()}] 轮换到新代理`);
+        this.requestCount = 0;
     }
 
     getRandomDelay() {
@@ -81,6 +87,51 @@ class ProxyManager {
         } catch (error) {
             console.error('代理验证失败:', error);
             return false;
+        }
+    }
+
+    // 添加新方法来强制更新IP
+    async forceRotateEndpoint() {
+        console.log(`[${new Date().toISOString()}] 定时强制更新IP...`);
+        this.rotateEndpoint();
+        this.lastRotationTime = Date.now();
+        
+        // 验证新IP
+        try {
+            const { proxyUrl, headers } = await this.getProxyUrl();
+            const browser = await puppeteer.launch({
+                headless: 'new',
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--ignore-certificate-errors',
+                    `--proxy-server=${proxyUrl}`
+                ]
+            });
+            const page = await browser.newPage();
+            await page.setExtraHTTPHeaders(headers);
+            
+            const isValid = await this.validateProxy(page);
+            if (!isValid) {
+                console.log('新IP验证失败，尝试重新更新...');
+                await this.forceRotateEndpoint();
+            }
+            
+            await browser.close();
+            await proxyChain.closeAnonymizedProxy(proxyUrl, true);
+        } catch (error) {
+            console.error('IP更新验证失败:', error);
+            // 如果失败，稍后重试
+            setTimeout(() => this.forceRotateEndpoint(), 30000);
+        }
+    }
+
+    // 添加清理方法
+    cleanup() {
+        if (this.rotationTimer) {
+            clearInterval(this.rotationTimer);
         }
     }
 }
@@ -182,18 +233,23 @@ async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
         })
     );
 
-    for (let i = 0; i < years.length; i += maxConcurrent) {
-        const yearBatch = years.slice(i, i + maxConcurrent);
-        const promises = yearBatch.map((year, index) => 
-            runScraperForYear(year, proxyManagers[index])
-        );
+    try {
+        for (let i = 0; i < years.length; i += maxConcurrent) {
+            const yearBatch = years.slice(i, i + maxConcurrent);
+            const promises = yearBatch.map((year, index) => 
+                runScraperForYear(year, proxyManagers[index])
+            );
 
-        await Promise.all(promises);
-        
-        if (i + maxConcurrent < years.length) {
-            console.log('批次处理完成，等待30秒后继续...');
-            await sleep(30000);
+            await Promise.all(promises);
+            
+            if (i + maxConcurrent < years.length) {
+                console.log('批次处理完成，等待30秒后继续...');
+                await sleep(30000);
+            }
         }
+    } finally {
+        // 清理所有代理管理器的定时器
+        proxyManagers.forEach(manager => manager.cleanup());
     }
 }
 

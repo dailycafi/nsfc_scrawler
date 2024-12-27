@@ -144,7 +144,7 @@ async function saveToFile(newData, year, code) {
         ].join('\n');
 
         await fs.writeFile(filePath, csvContent);
-        console.log(`数据已保存到: ${filePath}`);
+        console.log(`数据已保��到: ${filePath}`);
         console.log(`新增数据条数: ${uniqueNewData.length}`);
         console.log(`总数据条数: ${allData.length}`);
         totalResults += uniqueNewData.length;
@@ -170,6 +170,71 @@ async function expandDepartment(page, deptTitle, maxRetries = 3) {
       }
   }
   throw new Error(`未能打开部门 ${deptTitle}`);
+}
+
+// 添加一个通用的重试函数
+async function retryOperation(operation, maxRetries = 3, description = '') {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            return await operation();
+        } catch (error) {
+            console.error(`${description} 失败 (尝试 ${i + 1}/${maxRetries}):`, error.message);
+            if (i === maxRetries - 1) throw error;
+            await sleep(2000 * (i + 1)); // 递增等待时间
+        }
+    }
+}
+
+// 修改选择资助类别的部分
+async function selectFundType(page, fundType) {
+    return retryOperation(async () => {
+        // 1. 等待页面稳定
+        await page.waitForFunction(() => {
+            const loadingMasks = document.querySelectorAll('.el-loading-mask');
+            return Array.from(loadingMasks).every(mask => 
+                getComputedStyle(mask).display === 'none'
+            );
+        }, { timeout: 10000 });
+        
+        await sleep(2000);
+
+        // 2. 使用正确的选择器找到资助类别输入框
+        const inputSelector = 'label[for="projectType"] + .el-form-item__content .el-input__inner';
+        await page.waitForSelector(inputSelector, { 
+            visible: true, 
+            timeout: 500 
+        });
+
+        // 3. 点击输入框
+        await page.click(inputSelector);
+        await sleep(1000);
+
+        // 4. 等待下拉菜单出现
+        const dropdownSelector = '.el-select-dropdown.theSelector';
+        await page.waitForSelector(dropdownSelector, { 
+            visible: true, 
+            timeout: 5000 
+        });
+
+        // 5. 选择目标选项
+        const selected = await page.evaluate((targetFundType) => {
+            const options = Array.from(document.querySelectorAll('.el-select-dropdown.theSelector .el-select-dropdown__item span'));
+            for (const option of options) {
+                if (option.textContent.trim() === targetFundType) {
+                    option.parentElement.click();
+                    return true;
+                }
+            }
+            return false;
+        }, fundType);
+
+        if (!selected) {
+            throw new Error(`未找到资助类别选项: ${fundType}`);
+        }
+
+        await sleep(1000);
+        return true;
+    }, 3, '选择资助类别');
 }
 
 // 2) 通用搜索函数
@@ -240,31 +305,8 @@ async function runSearch(page, { year, fundType, code }) {
                 console.error(`选择年度 ${year} 时出错:`, err);
             }
 
-            // (C) 选择资助类别
-            try {
-                const fundInputSelector = 'label[for="projectType"] + .el-form-item__content .el-input';
-                await page.waitForSelector(fundInputSelector, { visible: true, timeout: 2000 });
-                await page.click(fundInputSelector);
-
-                const dropdownSelector = '.el-select-dropdown';
-                await page.waitForSelector(dropdownSelector, { visible: true, timeout: 2000 });
-
-                let foundFund = false;
-                const liItems = await page.$$(dropdownSelector + ' li');
-                for (const li of liItems) {
-                    const liText = await li.evaluate(el => el.innerText.trim());
-                    if (liText === fundType) {
-                        await li.click();
-                        foundFund = true;
-                        break;
-                    }
-                }
-                if (!foundFund) {
-                    console.warn(`(警告) 资助类别下拉里没有 "${fundType}"`);
-                }
-            } catch (err) {
-                console.error(`选择资助类别 "${fundType}" 时出错:`, err);
-            }
+            // 选择资助类别
+            await selectFundType(page, fundType);
 
             // (D) 申请代码处理
             console.log('准备点击申请代码输入框...');
@@ -450,7 +492,7 @@ async function runSearch(page, { year, fundType, code }) {
                             const row4 = item.querySelector('.el-row:nth-child(4)');
                             const keywords = row4?.querySelector('.el-col')?.textContent?.replace('关键词：', '')?.trim() || '';
 
-                            // 如果没有批准号或标题，说明是无效���据
+                            // 如果没有批准号或标题，说明是无效数据
                             if (!approveText || !title) {
                                 return null;
                             }
@@ -544,7 +586,7 @@ async function runSearchByYear(page, year, { onProxyError }) {
                 console.log(`[${year}] ${mainCode} 过滤掉 ${subCodes.length - validSubCodes.length} 个黑名单子类`);
             }
             
-            // 对每个有效子类遍历所有基金类型
+            // 对每个有效��类遍历所有基金类型
             for (const subCode of validSubCodes) {
                 for (const fundType of FUND_TYPES) {
                     try {
@@ -602,10 +644,12 @@ async function getSubCodes(page, mainCode, maxRetries = 3) {
                 timeout: 10000  
             });
             await page.waitForSelector('.el-collapse-item.is-active', { timeout: 10000 });
-            await randomSleep(500, 1000);  // 增加等待时间
+            await randomSleep(500, 1000);
 
-            // 点击申请代码输入框
-            await page.click('label[for="code"] ~ .el-form-item__content .el-input input[readonly]');
+            // 直接点击申请代码输入框，不需要选择资助类别
+            const codeInputSelector = 'label[for="code"] ~ .el-form-item__content .el-input input[readonly]';
+            await page.waitForSelector(codeInputSelector, { visible: true, timeout: 5000 });
+            await page.click(codeInputSelector);
             await randomSleep(500, 1000);
 
             // 等待树加载
@@ -657,7 +701,7 @@ async function getSubCodes(page, mainCode, maxRetries = 3) {
                 console.error(`获取 ${mainCode} 的子类代码失败，已达到最大重试次数`);
                 return [];
             }
-            await sleep(1000 * attempt); // 重试前等待时间，每次递增
+            await sleep(1000 * attempt);
         }
     }
     return [];
