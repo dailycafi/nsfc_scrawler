@@ -102,7 +102,7 @@ async function runSearch(page, { year, fundType, code }) {
 
       // 等待高级��索面板加载
       await page.waitForSelector('.el-collapse-item.is-active', { timeout: 15000 });
-      await sleep(2000);
+      await randomSleep(500, 1000);
 
       // (B) 选择结题年度
       try {
@@ -541,11 +541,18 @@ async function saveResultsToCSV(results, mainCode, subCode, year) {
 
   console.log(`准备保存 ${validResults.length} 条有效记录...`);
 
-  // 修改主目录路径，使用搜索年份而不是当前年份
+  // 修改路径，使用 results 目录
   const dirName = String(year).slice(-2);  // 使用搜索的年份
-  const mainDir = `./${dirName}/${mainCode}`;
-  if (!fs.existsSync(`./${dirName}`)) {
-    fs.mkdirSync(`./${dirName}`);
+  const resultsDir = './results';  // results 根目录
+  const yearDir = `${resultsDir}/${dirName}`;  // 年份目录
+  const mainDir = `${yearDir}/${mainCode}`;  // 主类目录
+
+  // 创建必要的目录
+  if (!fs.existsSync(resultsDir)) {
+    fs.mkdirSync(resultsDir);
+  }
+  if (!fs.existsSync(yearDir)) {
+    fs.mkdirSync(yearDir);
   }
   if (!fs.existsSync(mainDir)) {
     fs.mkdirSync(mainDir);
@@ -796,7 +803,7 @@ async function main() {
             // 传递年份参数
             await saveResultsToCSV(results, mainCode, subCode, year);  // 添加 year 参数
 
-            await randomSleep(1000, 2000);
+            await randomSleep(500, 1000);
           } catch (err) {
             console.error(`搜索出错 (${subCode} - ${year} - ${fundType}):`, err);
             // 继续下一个组合
