@@ -1,53 +1,54 @@
 const puppeteer = require('puppeteer');
-const OxylabsManager = require('./proxy/OxylabsManager');
-const oxyConfig = require('./config/oxylabs');
+const proxyChain = require('proxy-chain');
 
-async function testProxy() {
-    console.log('开始测试 Oxylabs 代理...');
-    
-    const proxyManager = new OxylabsManager(oxyConfig);
-    const { proxyUrl } = proxyManager.getProxyUrl();
-    
-    console.log('使用代理URL:', proxyUrl);
+const proxyServer = 'cn-pr.oxylabs.io:30002';
+const username = 'dailycafi_OeqdP';
+const password = 'Cinbofei3loushab_';
 
-    try {
-        const browser = await puppeteer.launch({
-            headless: "new",
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                `--proxy-server=${proxyUrl}`
-            ]
-        });
+async function launchBrowserWithProxy() {
+    const proxy = `http://${username}:${password}@${proxyServer}`;
+    console.log('使用的代理:', proxy);
 
-        const page = await browser.newPage();
-        
-        // 设置代理认证
-        await page.authenticate({
-            username: `customer-${oxyConfig.username}`,
-            password: oxyConfig.password
-        });
+    const anonymizedProxy = await proxyChain.anonymizeProxy(proxy);
+    console.log('匿名代理URL:', anonymizedProxy);
 
-        // 先测试 Oxylabs 的 IP 检测页面
-        console.log('\n1. 测试 Oxylabs IP 检测...');
-        await page.goto('https://ip.oxylabs.io/location');
-        let content = await page.evaluate(() => document.body.textContent);
-        console.log('Oxylabs IP 信息:', content);
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: [`--proxy-server=${anonymizedProxy}`],
+        ignoreHTTPSErrors: true
+    });
 
-        // 测试目标网站
-        console.log('\n2. 测试目标网站访问...');
-        await page.goto('https://kd.nsfc.gov.cn/');
-        const title = await page.title();
-        console.log('网站标题:', title);
-
-        await browser.close();
-        console.log('\n测试完成！');
-
-    } catch (error) {
-        console.error('测试过程中出现错误:', error);
-    }
+    return { browser, anonymizedProxy };
 }
 
-// 运行测试
-testProxy().catch(console.error); 
+async function accessPageWithRetry(url, maxRetries = 3) {
+    let retryCount = 0;
+    while (retryCount < maxRetries) {
+        const { browser, anonymizedProxy } = await launchBrowserWithProxy();
+        const page = await browser.newPage();
+        try {
+            console.log('正在访问页面...');
+            await page.goto(url, {
+                waitUntil: 'networkidle0',
+                timeout: 60000
+            });
+            const pageText = await page.evaluate(() => document.body.innerText);
+            console.log('页面内容:', pageText);
+            await browser.close();
+            await proxyChain.closeAnonymizedProxy(anonymizedProxy, true);
+            return;
+        } catch (error) {
+            console.error('访问页面时出错:', error);
+            retryCount++;
+            console.log(`重试 ${retryCount}/${maxRetries} 次...`);
+            await browser.close();
+            await proxyChain.closeAnonymizedProxy(anonymizedProxy, true);
+        }
+    }
+    console.error('无法访问页面，已达到最大重试次数');
+}
+
+(async () => {
+    const url = 'https://kd.nsfc.cn/finalProjectInit?advanced=true';
+    await accessPageWithRetry(url);
+})();

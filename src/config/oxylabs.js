@@ -1,6 +1,6 @@
 module.exports = {
     username: 'dailycafi_OeqdP',
     password: 'Cinbofei3loushab_',
-    endpoint: 'cnt9t1is.com:8000',
+    endpoint: 'cn-pr.oxylabs.io:30001',
     sticky: false
 }; 

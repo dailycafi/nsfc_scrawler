@@ -1,168 +1,170 @@
 const { runSearch } = require('./scraper');
 const puppeteer = require('puppeteer');
-const OxylabsManager = require('./proxy/OxylabsManager');
-const oxyConfig = require('./config/oxylabs');
 const prompt = require('prompt-sync')({ sigint: true });
+const proxyChain = require('proxy-chain');
 
-const FUND_TYPES = [
-    "面上项目",
-    "重点项目",
-    "重大研究计划",
-    "联合基金项目",
-    "青年科学基金项目",
-    "地区科学基金项目",
-    "专项基金项目"
-  ];
-  
-  const CODES = [
-    // C 生命科学部 (C01-C21)
-    ...Array.from({length: 21}, (_, i) => `C${String(i + 1).padStart(2, '0')}`),
-    // H 医学科学部 (H01-H35)
-    ...Array.from({length: 35}, (_, i) => `H${String(i + 1).padStart(2, '0')}`)
-  ];
-  
+class ProxyManager {
+    constructor(config) {
+        this.username = config.username;
+        this.password = config.password;
+        this.baseEndpoint = 'cn-pr.oxylabs.io';
+        this.minPort = 30001;
+        this.maxPort = 39999;
+        this.currentEndpointIndex = 0;
+        this.requestCount = 0;
+        this.maxRequestsPerIP = 50;
+        this.minDelay = 1000;
+        this.maxDelay = 3000;
+        this.lastRotationTime = Date.now();
+        this.rotationInterval = 10 * 60 * 1000; // 10分钟
+        this.maxRetries = 3; // 最大重试次数
+    }
 
-// 添加黑名单配置
-const BLACKLIST_CODES = [
-    'C0301', 'H0611', 'H2804', 'H0113', 'C1904', 'C1909', 'H3407',
-    'H1004', 'H2208', 'H2805', 'H3012', 'H1007', 'C1701', 'H3102',
-    'H2809', 'H1010', 'H1309', 'C1312', 'C1613', 'H1404', 'H2501',
-    'H1707', 'C0405', 'H3408', 'H3204', 'C0909', 'C1611', 'H2711',
-    'H0605', 'H1507', 'H3101', 'C1607', 'H2303', 'H2801', 'H3411',
-    'H1008', 'H0418', 'H3201', 'C0607', 'H0417', 'H0422', 'C0306',
-    'C0312', 'C0101', 'H3207', 'C0908', 'C1902', 'C0910', 'H1011',
-    'C2009', 'H3120', 'H2502', 'H3410', 'H2003', 'H3513', 'C0208',
-    'H1903', 'H2605', 'H2813', 'H1509', 'C1614', 'H0106', 'H2808',
-    'H1003', 'C0914', 'H0315', 'H2604', 'C1505', 'H1206', 'H3109',
-    'H0210', 'H3412', 'H2802', 'H3404', 'H3104', 'H0420', 'H1508',
-    'H0218', 'C1612', 'H3118', 'H3007', 'H1506', 'H0908', 'C1511',
-    'C1507', 'H2814', 'H0314', 'H1009', 'H3014', 'H0208', 'H0610',
-    'H3303', 'H1705', 'H3409', 'H3302', 'C0201', 'H2812', 'C0304',
-    'C1604', 'H0506', 'H2606', 'H1814', 'C0606', 'H0511', 'C1609',
-    'H2806', 'H0114', 'H0419', 'H1308', 'C0402', 'C0305', 'H1005',
-    'H0905', 'H1505', 'H3114', 'H0816', 'H3206', 'H0603', 'H3205',
-    'H0104', 'H0412', 'C1301', 'H2402', 'H0903', 'C1307', 'H1503',
-    'C1303', 'H2209', 'H0904', 'H0915', 'H1706', 'C1608', 'H2811',
-    'H1402', 'H3105', 'C1610', 'H0105', 'H0303', 'H0510', 'H1006',
-    'H0112', 'C0313', 'H0913', 'H3103', 'H0204', 'C0302', 'C1702',
-    'H0509', 'H0508', 'H3009', 'H2603', 'C1601', 'H3202', 'C1502',
-    'H0220', 'H1403', 'H0902', 'H1504', 'H1301', 'C1509', 'C0308',
-    'H1401', 'H3119', 'H0507', 'H2803', 'H0108', 'C0307', 'H3219',
-    'H1406', 'H3107', 'H3208', 'H3106', 'C1703', 'C1006', 'H3121',
-    'H2504', 'C1302', 'C1603', 'H2807', 'C1306', 'H3301', 'H1405',
-    'H3008'];
+    getRandomPort() {
+        return Math.floor(Math.random() * (this.maxPort - this.minPort + 1)) + this.minPort;
+    }
 
+    async getProxyUrl(retryCount = 0) {
+        // 检查是否需要更新IP
+        const now = Date.now();
+        if (now - this.lastRotationTime >= this.rotationInterval) {
+            console.log(`[${new Date().toISOString()}] 定时更新IP...`);
+            this.rotateEndpoint();
+            this.lastRotationTime = now;
+        }
 
-// 添加 sleep 函数
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        this.requestCount++;
+        if (this.requestCount >= this.maxRequestsPerIP) {
+            this.rotateEndpoint();
+            this.requestCount = 0;
+        }
 
-// 添加用户输入函数
-async function askQuestion(query) {
-    return new Promise((resolve) => {
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-            terminal: false
-        });
+        const port = this.getRandomPort();
+        const endpoint = `${this.baseEndpoint}:${port}`;
+        const originalProxyUrl = `http://${this.username}:${this.password}@${endpoint}`;
 
-        rl.question(query, (answer) => {
-            rl.close();
-            resolve(answer.trim());
-        });
-    });
+        try {
+            const anonymizedProxy = await proxyChain.anonymizeProxy(originalProxyUrl);
+            return {
+                proxyUrl: anonymizedProxy,
+                headers: {
+                    'x-oxylabs-user-agent-type': 'desktop_chrome',
+                    'x-oxylabs-geo-location': 'China'
+                }
+            };
+        } catch (error) {
+            if (retryCount >= this.maxRetries) {
+                throw new Error(`代理获取失败，已重试${this.maxRetries}次: ${error.message}`);
+            }
+            console.error(`代理获取失败，尝试第${retryCount + 1}次重试:`, error);
+            return this.getProxyUrl(retryCount + 1);
+        }
+    }
+
+    rotateEndpoint() {
+        console.log(`[${new Date().toISOString()}] 轮换到新代理`);
+    }
+
+    getRandomDelay() {
+        return Math.floor(Math.random() * (this.maxDelay - this.minDelay + 1)) + this.minDelay;
+    }
+
+    async validateProxy(page) {
+        try {
+            await page.goto('http://ip.oxylabs.io', {
+                waitUntil: 'networkidle0',
+                timeout: 30000
+            });
+            const ip = await page.evaluate(() => document.body.innerText);
+            console.log(`代理验证成功，当前IP: ${ip}`);
+            return true;
+        } catch (error) {
+            console.error('代理验证失败:', error);
+            return false;
+        }
+    }
 }
 
-async function initBrowser(proxyManager) {
-    const { proxyUrl } = proxyManager.getProxyUrl();
-    console.log('正在使用代理:', proxyUrl);
+async function initBrowser(proxyManager, year, retryCount = 0) {
+    const maxRetries = 3;
+    const { proxyUrl, headers } = await proxyManager.getProxyUrl();
+    console.log(`[${year}] 正在使用匿名代理:`, proxyUrl);
 
     try {
         const browser = await puppeteer.launch({
-            headless: "new",
+            headless: 'new', // 使用新的 headless 模式
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--ignore-certificate-errors',
-                '--ignore-certificate-errors-spki-list',
-                `--proxy-server=${proxyUrl}`,
-                '--disable-web-security',
-                '--allow-running-insecure-content',
-                '--disable-features=IsolateOrigins,site-per-process',
+                `--proxy-server=${proxyUrl}`
             ],
             ignoreHTTPSErrors: true
         });
 
         const page = await browser.newPage();
-        
-        await page.authenticate({
-            username: `customer-${oxyConfig.username}`,
-            password: oxyConfig.password
-        });
+        await page.setExtraHTTPHeaders(headers);
 
-        page.setDefaultTimeout(30000);
-        page.setDefaultNavigationTimeout(30000);
+        // 验证代理是否可用
+        const isValid = await proxyManager.validateProxy(page);
+        if (!isValid) {
+            await closeBrowser(browser, proxyUrl);
+            if (retryCount >= maxRetries) {
+                throw new Error('代理验证失败次数过多');
+            }
+            console.log(`[${year}] 代理验证失败，尝试新的代理...`);
+            return initBrowser(proxyManager, year, retryCount + 1);
+        }
 
-        page.on('error', err => {
-            console.error('页面错误:', err);
-        });
-
-        return { browser, page };
+        return { browser, page, proxyUrl };
     } catch (err) {
-        console.error('初始化浏览器失败:', err);
-        throw err;
+        console.error(`[${year}] 初始化浏览器失败:`, err);
+        if (retryCount >= maxRetries) {
+            throw err;
+        }
+        return initBrowser(proxyManager, year, retryCount + 1);
     }
 }
 
-async function testProxy(page) {
-    try {
-        console.log('测试代理连接...');
-        const response = await page.goto('http://ip.oxylabs.io/location', {
-            waitUntil: 'networkidle0',
-            timeout: 30000
-        });
-        
-        const content = await response.text();
-        console.log('代理测试结果:', content);
-        return true;
-    } catch (err) {
-        console.error('代理测试失败:', err);
-        return false;
-    }
+async function closeBrowser(browser, proxyUrl) {
+    await browser.close();
+    await proxyChain.closeAnonymizedProxy(proxyUrl, true);
 }
 
 async function runScraperForYear(year, proxyManager) {
-    console.log(`[${new Date().toISOString()}] 开始处理 ${year} 年的数据`);
+    console.log(`[${year}] 开始处理数据`);
+    let browser, page, proxyUrl;
     
     try {
-        const { browser, page } = await initBrowser(proxyManager);
+        // 初始化浏览器
+        ({ browser, page, proxyUrl } = await initBrowser(proxyManager, year));
         
-        // 先测试代理
-        const proxyWorking = await testProxy(page);
-        if (!proxyWorking) {
-            throw new Error('代理连接测试失败');
-        }
-
-        for (const fundType of FUND_TYPES) {
-            for (const code of CODES) {
-                if (BLACKLIST_CODES.includes(code)) {
-                    continue;
-                }
+        // 从 scraper.js 中导入 runSearchByYear 函数
+        const { runSearchByYear } = require('./scraper');
+        
+        // 传入 proxyManager 以便在需要时切换代理
+        await runSearchByYear(page, year, {
+            onProxyError: async () => {
+                // 关闭当前浏览器
+                await closeBrowser(browser, proxyUrl);
                 
-                try {
-                    await runSearch(page, { year, fundType, code });
-                    await sleep(proxyManager.getRandomDelay());
-                } catch (err) {
-                    console.error(`处理 ${year}-${fundType}-${code} 时出错:`, err.message);
-                }
+                // 切换代理并重新初始化浏览器
+                console.log(`[${year}] 切换代理并重新初始化浏览器...`);
+                proxyManager.rotateEndpoint();
+                ({ browser, page, proxyUrl } = await initBrowser(proxyManager, year));
+                
+                return page;
             }
-        }
-
-        await browser.close();
-        console.log(`[${new Date().toISOString()}] 完成 ${year} 年的数据处理`);
-    } catch (err) {
-        console.error(`处理 ${year} 年数据时发生错误:`, err);
+        });
+        
+        await closeBrowser(browser, proxyUrl);
+        console.log(`[${year}] 完成数据处理`);
+    } catch (error) {
+        console.error(`[${year}] 处理数据失败:`, error);
+        await closeBrowser(browser, proxyUrl);
+        throw error;
     }
 }
 
@@ -174,7 +176,10 @@ async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
     
     const proxyManagers = Array.from(
         { length: maxConcurrent }, 
-        () => new OxylabsManager(oxyConfig)
+        () => new ProxyManager({
+            username: 'dailycafi_OeqdP',
+            password: 'Cinbofei3loushab_'
+        })
     );
 
     for (let i = 0; i < years.length; i += maxConcurrent) {
@@ -186,39 +191,31 @@ async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
         await Promise.all(promises);
         
         if (i + maxConcurrent < years.length) {
-            console.log('次处理完成，等待30秒后继续...');
+            console.log('批次处理完成，等待30秒后继续...');
             await sleep(30000);
         }
     }
 }
 
-// 修改用户输入函数
 async function getInputs() {
     try {
-        // 使用同步提示输入
-        const startYear = parseInt(prompt('请输入起始年份 (例如: 2010): '));
+        const startYear = parseInt(prompt('请输入起始年份 (例如: 2005): '));
         if (isNaN(startYear)) {
             throw new Error('起始年份必须是有效的数字');
         }
 
-        const endYear = parseInt(prompt('请输入结束年份 (例如: 2022): '));
+        const endYear = parseInt(prompt('请输入结束年份 (例如: 2015): '));
         if (isNaN(endYear)) {
             throw new Error('结束年份必须是有效的数字');
         }
 
-        const maxConcurrent = parseInt(prompt('请输入同时运行的爬虫数量 (建议 2-5 个): '));
-        if (isNaN(maxConcurrent)) {
-            throw new Error('爬虫数量必须是有效的数字');
-        }
-
-        // 验证输入
         if (startYear > endYear) {
             throw new Error('起始年份必须小于或等于结束年份');
         }
 
-        if (maxConcurrent < 1 || maxConcurrent > 10) {
-            throw new Error('爬虫数量必须在 1-10 之间');
-        }
+        // 自动计算需要的爬虫数量
+        const maxConcurrent = endYear - startYear + 1;
+        console.log(`根据年份范围，将使用 ${maxConcurrent} 个并发爬虫`);
 
         return { startYear, endYear, maxConcurrent };
     } catch (error) {
@@ -227,12 +224,10 @@ async function getInputs() {
     }
 }
 
-// 修改主函数
 async function main() {
     try {
         console.log('多年份数据爬取程序');
         
-        // 获取所有输入
         const { startYear, endYear, maxConcurrent } = await getInputs();
 
         console.log(`\n开始爬取 ${startYear}-${endYear} 年的数据，同时运行 ${maxConcurrent} 个爬虫\n`);
@@ -245,5 +240,4 @@ async function main() {
     }
 }
 
-// 运行程序
 main().catch(console.error); 

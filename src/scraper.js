@@ -329,7 +329,7 @@ async function runSearch(page, { year, fundType, code }) {
                         break;
                     }
 
-                    console.log('点击未成功打开树结���，将重试...');
+                    console.log('点击成功打开树结构，将重试...');
 
                 } catch (err) {
                     console.log(`第 ${attempt} 次尝试失败:`, err.message);
@@ -428,18 +428,29 @@ async function runSearch(page, { year, fundType, code }) {
 
                     return items.map(item => {
                         try {
-                            const row1 = item.querySelector('.el-row:nth-child(1)');
-                            const row2 = item.querySelector('.el-row:nth-child(2)');
-                            const row3 = item.querySelector('.el-row:nth-child(3)');
-                            const row4 = item.querySelector('.el-row:nth-child(4)');
-
                             // 获取标题
-                            const title = row1?.querySelector('.title')?.textContent?.trim() || '';
+                            const title = item.querySelector('.el-row:nth-child(1) a')?.textContent?.trim() || '';
 
-                            // 获取批准号
+                            // 获取第二行数据
+                            const row2 = item.querySelector('.el-row:nth-child(2)');
                             const approveText = row2?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('批准号：', '')?.trim() || '';
+                            const codeText = row2?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('申请代码：', '')?.trim() || '';
+                            const fundTypeText = row2?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('项目类别：', '')?.trim() || '';
+                            const personText = row2?.querySelector('.el-col:nth-child(4)')?.textContent?.replace('项目负责人：', '')?.trim() || '';
 
-                            // 如果没有批准号或标题，说明是无效数据
+                            // 获取第三行数据
+                            const row3 = item.querySelector('.el-row:nth-child(3)');
+                            const moneyText = row3?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('资助经费：', '').replace('（万元）', '')?.trim() || '';
+                            const money = moneyText ? parseFloat(moneyText) : 0;
+                            const approveYear = row3?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('批准年度：', '')?.trim() || '';
+                            const endYear = row3?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('结题年度：', '')?.trim() || '';
+                            const organization = row3?.querySelector('.el-col:nth-child(4) a')?.textContent?.trim() || '';
+
+                            // 获取第四行数据（关键词）
+                            const row4 = item.querySelector('.el-row:nth-child(4)');
+                            const keywords = row4?.querySelector('.el-col')?.textContent?.replace('关键词：', '')?.trim() || '';
+
+                            // 如果没有批准号或标题，说明是无效���据
                             if (!approveText || !title) {
                                 return null;
                             }
@@ -449,37 +460,6 @@ async function runSearch(page, { year, fundType, code }) {
                                 return null;
                             }
                             processedApproves.add(approveText);
-
-                            // 获取申请代码
-                            const codeText = row2?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('申请代码：', '')?.trim() || '';
-
-                            // 获取资助类别
-                            const fundTypeText = row2?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('资助类别：', '')?.trim() || '';
-
-                            // 获取负责人
-                            const personText = row3?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('负责人：', '')?.trim() || '';
-
-                            // 获取金额
-                            const moneyText = row3?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('金额：', '')?.trim() || '';
-                            const money = moneyText ? parseFloat(moneyText) : 0;
-
-                            // 获取批准年度
-                            const approveYear = row3?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('批准年度：', '')?.trim() || '';
-
-                            // 获取结题年度
-                            const endYear = row3?.querySelector('.el-col:nth-child(4)')?.textContent?.replace('结题年度：', '')?.trim() || '';
-
-                            // 获取依托单位
-                            const organization = row4?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('依托单位：', '')?.trim() || '';
-
-                            // 获取关键词
-                            const keywords = row4?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('关键词：', '')?.trim() || '';
-
-                            // 验证必要字段
-                            if (!title || !approveText || !codeText || !fundTypeText || !personText) {
-                                console.log('跳过无效数据项');
-                                return null;
-                            }
 
                             return {
                                 searchYear: year,
@@ -532,83 +512,67 @@ async function runSearch(page, { year, fundType, code }) {
     return results;
 }
 
-// 添加抓取当前页面数据的函数
-async function scrapeCurrentPage(page, { year, fundType, code }) {
-    console.log('开始抓取当前页数据...');
 
-    try {
-        await page.waitForSelector('.info-warp', { timeout: 10000 });
-
-        const results = await page.evaluate(({ year, fundType, code }) => {
-            const items = Array.from(document.querySelectorAll('.info-warp'));
-            console.log(`找到 ${items.length} 个结果项`);
-
-            // 用 Set 来存储已处理的批准号，避免重复
-            const processedApproves = new Set();
-
-            return items.map(item => {
-                try {
-                    // 获取基本信息 (第二行)
-                    const row2 = item.querySelector('.el-row:nth-child(2)');
-                    const approveText = row2?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('批准号：', '')?.trim() || '';
-
-                    // 如果这个批准号已经处理过，跳过
-                    if (processedApproves.has(approveText)) {
-                        return null;
+// 添加新的年份处理函数
+async function runSearchByYear(page, year, { onProxyError }) {
+    console.log(`[${year}] 开始处理年份数据`);
+    
+    const validMainCodes = CODES.filter(code => !BLACKLIST_CODES.includes(code));
+    console.log(`[${year}] 总共 ${CODES.length} 个主类代码，过滤掉 ${CODES.length - validMainCodes.length} 个黑名单代码`);
+    
+    let currentMainCodeIndex = 0;
+    while (currentMainCodeIndex < validMainCodes.length) {
+        const mainCode = validMainCodes[currentMainCodeIndex];
+        
+        try {
+            console.log(`[${year}] 尝试获取 ${mainCode} 的子类列表...`);
+            const subCodes = await getSubCodes(page, mainCode);
+            
+            // 验证获取到的子类是否有效
+            if (!subCodes || subCodes.length === 0) {
+                console.error(`[${year}] ${mainCode} 未获取到有效子类，切换代理重试...`);
+                page = await onProxyError();
+                await sleep(5000);
+                continue; // 重试当前主类
+            }
+            
+            console.log(`[${year}] ${mainCode} 获取到 ${subCodes.length} 个子类`);
+            
+            // 过滤掉黑名单中的子类代码
+            const validSubCodes = subCodes.filter(code => !BLACKLIST_CODES.includes(code));
+            if (validSubCodes.length < subCodes.length) {
+                console.log(`[${year}] ${mainCode} 过滤掉 ${subCodes.length - validSubCodes.length} 个黑名单子类`);
+            }
+            
+            // 对每个有效子类遍历所有基金类型
+            for (const subCode of validSubCodes) {
+                for (const fundType of FUND_TYPES) {
+                    try {
+                        console.log(`[${year}] 处理 ${fundType}-${subCode}`);
+                        await runSearch(page, { year, fundType, code: subCode });
+                        await randomSleep(1000, 2000);
+                    } catch (error) {
+                        console.error(`[${year}] ${fundType}-${subCode} 处理失败:`, error);
+                        if (error.message.includes('net::') || error.message.includes('proxy')) {
+                            console.log(`[${year}] 网络错误，切换代理重试...`);
+                            page = await onProxyError();
+                            await sleep(5000);
+                            continue; // 重试当前组合
+                        }
                     }
-                    processedApproves.add(approveText);
-
-                    // 获取标题 (第一行)
-                    const title = item.querySelector('.el-row:first-child .el-col-21 a')?.textContent?.trim() || '';
-
-                    const codeText = row2?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('申请代码：', '')?.trim() || '';
-                    const fundTypeText = row2?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('项目类别：', '')?.trim() || '';
-                    // 修正：正确获取项目负责人
-                    const personText = row2?.querySelector('.el-col:nth-child(4)')?.textContent?.replace('项目负责人：', '')?.trim() || '';
-
-                    // 获取详细信息 (第三行)
-                    const row3 = item.querySelector('.el-row:nth-child(3)');
-                    const money = row3?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('资助经费：', '')?.replace('（万元）', '')?.trim() || '';
-                    const approveYear = row3?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('批准年度：', '')?.trim() || '';
-                    const endYear = row3?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('结题年度：', '')?.trim() || '';
-                    const organization = row3?.querySelector('.el-col:nth-child(4)')?.textContent?.replace('依托单位：', '')?.trim() || '';
-
-                    // 获取关键词 (第四行)
-                    const keywordsText = item.querySelector('.el-row:nth-child(4) .el-col-24')?.textContent || '';
-                    const keywords = keywordsText.replace('关键词：', '').trim();
-
-                    return {
-                        searchYear: year,
-                        searchFund: fundType,
-                        searchCode: code,
-                        title,
-                        approveText,
-                        codeText,
-                        fundTypeText,
-                        personText,
-                        money,
-                        approveYear,
-                        endYear,
-                        organization,
-                        keywords
-                    };
-                } catch (err) {
-                    console.error('解析单个项目时出错:', err);
-                    return null;
                 }
-            }).filter(Boolean); // 过滤掉 null 值
-        }, { year, fundType, code });
-
-        console.log(`成功抓取到 ${results.length} 条数据`);
-        if (results.length > 0) {
-            console.log('第一条数据:', results[0]);
+            }
+            
+            // 只有成功完成当前主类的所有处理才增加索引
+            currentMainCodeIndex++;
+            
+        } catch (error) {
+            console.error(`[${year}] ${mainCode} 获取子类失败:`, error);
+            console.log(`[${year}] 切换代理并重试 ${mainCode}...`);
+            page = await onProxyError();
+            await sleep(5000);
+            // 不增加 currentMainCodeIndex，继续尝试当前主类
         }
-
-        return results;
-
-    } catch (err) {
-        console.error('抓取页面数据时出错:', err);
-        return [];
     }
 }
 
@@ -678,7 +642,7 @@ async function getSubCodes(page, mainCode, maxRetries = 3) {
                     .filter(Boolean);
             }, mainCode);
 
-            // 关闭申请代码选择框
+            // 关闭申请代码选择
             await page.keyboard.press('Escape');
             
             if (subCodes.length === 0) {
@@ -788,13 +752,10 @@ async function main() {
 // 导出需要的函数和常量
 module.exports = {
     runSearch,
-    BLACKLIST_CODES,
+    runSearchByYear,
     FUND_TYPES,
     CODES,
-    getSubCodes,
-    expandDepartment,
-    expandMainCategory,
-    main
+    BLACKLIST_CODES
 };
 
 // 如果直接运行此文件
