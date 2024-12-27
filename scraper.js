@@ -6,6 +6,10 @@
 
 const fs = require('fs');
 const puppeteer = require('puppeteer');
+const readline = require('readline').createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
 
 // 添加全局结果数组
 const results = [];
@@ -56,7 +60,7 @@ function randomSleep(min, max) {
 }
 
 // 1) 配置需要搜索的参数
-const YEARS = [2018];                     // 可根据需要改
+// const YEARS = [2018];                     // 可根据需要改
 const FUND_TYPES = [
   "面上项目",
   "重点项目",
@@ -96,7 +100,7 @@ async function runSearch(page, { year, fundType, code }) {
         timeout: 30000
       });
 
-      // 等待高级搜索面板加载
+      // 等待高级��索面板加载
       await page.waitForSelector('.el-collapse-item.is-active', { timeout: 15000 });
       await sleep(2000);
 
@@ -180,7 +184,7 @@ async function runSearch(page, { year, fundType, code }) {
 
           // 1. 等待页面完全加载
           await page.waitForFunction(() => {
-            // 检查页面是��完全加载
+            // 检查页面是否完全加载
             if (document.readyState !== 'complete') return false;
 
             // 检查是否有加载遮罩
@@ -518,7 +522,7 @@ async function scrapeCurrentPage(page, { year, fundType, code }) {
 }
 
 // 添加保存结果到 CSV 的函数
-async function saveResultsToCSV(results, mainCode, subCode) {
+async function saveResultsToCSV(results, mainCode, subCode, year) {
   // 如果结果为空，直接返回
   if (!results || results.length === 0) {
     console.log('没有数据需要保存');
@@ -537,10 +541,11 @@ async function saveResultsToCSV(results, mainCode, subCode) {
 
   console.log(`准备保存 ${validResults.length} 条有效记录...`);
 
-  // 修改主目录路径
-  const mainDir = `./18/${mainCode}`;
-  if (!fs.existsSync('./18')) {
-    fs.mkdirSync('./18');
+  // 修改主目录路径，使用搜索年份而不是当前年份
+  const dirName = String(year).slice(-2);  // 使用搜索的年份
+  const mainDir = `./${dirName}/${mainCode}`;
+  if (!fs.existsSync(`./${dirName}`)) {
+    fs.mkdirSync(`./${dirName}`);
   }
   if (!fs.existsSync(mainDir)) {
     fs.mkdirSync(mainDir);
@@ -644,64 +649,101 @@ async function expandMainCategory(page, mainCode) {
 }
 
 // 获取子类代码的函数
-async function getSubCodes(page, mainCode) {
-  try {
-    // 打开页面
-    await page.goto('https://kd.nsfc.cn/finalProjectInit?advanced=true', { waitUntil: 'networkidle2' });
-    await page.waitForSelector('.el-collapse-item.is-active', { timeout: 10000 });
+async function getSubCodes(page, mainCode, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`尝试获取 ${mainCode} 的子类代码 (第 ${attempt} 次尝试)...`);
+      
+      // 打开页面
+      await page.goto('https://kd.nsfc.cn/finalProjectInit?advanced=true', { 
+        waitUntil: 'networkidle2',
+        timeout: 10000  
+      });
+      await page.waitForSelector('.el-collapse-item.is-active', { timeout: 10000 });
+      await randomSleep(500, 1000);  // 增加等待时间
 
-    // 点击申请代码输入框
-    await page.click('label[for="code"] ~ .el-form-item__content .el-input input[readonly]');
-    await sleep(1000);
+      // 点击申请代码输入框
+      await page.click('label[for="code"] ~ .el-form-item__content .el-input input[readonly]');
+      await randomSleep(500, 1000);
 
-    // 等待树加载
-    await page.waitForSelector('.ant-tree', { visible: true, timeout: 2000 });
-    await sleep(500);
+      // 等待树加载
+      await page.waitForSelector('.ant-tree', { visible: true, timeout: 3000 });
+      await randomSleep(500, 1000);
 
-    // 展开对部门
-    const deptTitle = mainCode.startsWith('C') ? 'C 生命科学部' : 'H 医学科学部';
-    await expandDepartment(page, deptTitle);
-    await sleep(500);
+      // 展开部门
+      const deptTitle = mainCode.startsWith('C') ? 'C 生命科学部' : 'H 医学科学部';
+      await expandDepartment(page, deptTitle);
+      await randomSleep(500, 1000);
 
-    // 展开主类
-    await expandMainCategory(page, mainCode);
-    await sleep(1000);
+      // 展开主类
+      await expandMainCategory(page, mainCode);
+      await randomSleep(500, 1000);
 
-    // 获取子类代码
-    const subCodes = await page.evaluate((mainCode) => {
-      const mainTitle = Array.from(document.querySelectorAll('.ant-tree-title'))
-        .find(el => el.textContent.trim().startsWith(mainCode));
+      // 获取子类代码
+      const subCodes = await page.evaluate((mainCode) => {
+        const mainTitle = Array.from(document.querySelectorAll('.ant-tree-title'))
+          .find(el => el.textContent.trim().startsWith(mainCode));
 
-      if (!mainTitle) return [];
+        if (!mainTitle) return [];
 
-      const mainLi = mainTitle.closest('li');
-      if (!mainLi) return [];
+        const mainLi = mainTitle.closest('li');
+        if (!mainLi) return [];
 
-      const subItems = mainLi.querySelectorAll(':scope > ul.ant-tree-child-tree > li');
+        const subItems = mainLi.querySelectorAll(':scope > ul.ant-tree-child-tree > li');
 
-      return Array.from(subItems)
-        .map(item => {
-          const title = item.querySelector('.ant-tree-title');
-          if (!title) return null;
-          return title.textContent.trim().split(' ')[0];
-        })
-        .filter(Boolean);
-    }, mainCode);
+        return Array.from(subItems)
+          .map(item => {
+            const title = item.querySelector('.ant-tree-title');
+            if (!title) return null;
+            return title.textContent.trim().split(' ')[0];
+          })
+          .filter(Boolean);
+      }, mainCode);
 
-    // 关闭申请代码选择框
-    await page.keyboard.press('Escape');
-    return subCodes;
+      // 关闭申请代码选择框
+      await page.keyboard.press('Escape');
+      
+      if (subCodes.length === 0) {
+        throw new Error('未获取到子类代码');
+      }
+      
+      return subCodes;
 
-  } catch (err) {
-    console.error(`获取子类代码时出错 (${mainCode}):`, err);
-    return [];
+    } catch (err) {
+      console.error(`获取子类代码时出错 (${mainCode}) - 第 ${attempt} 次尝试:`, err);
+      if (attempt === maxRetries) {
+        console.error(`获取 ${mainCode} 的子类代码失败，已达到最大重试次数`);
+        return [];
+      }
+      await sleep(3000 * attempt); // 重试前等待时间，每次递增
+    }
   }
+  return [];
 }
 
-// 主函数：对 YEARS、FUND_TYPES、CODES 做多重循环
-;(async () => {
+// 2. 修改主函数为异步函数并添加用户输入
+async function main() {
+  const year = await new Promise(resolve => {
+    readline.question('请输入要爬取的年份 (例如: 2018): ', answer => {
+      readline.close();
+      resolve(parseInt(answer));
+    });
+  });
+
+  // 验证输入的年份
+  if (isNaN(year) || year < 1900 || year > new Date().getFullYear()) {
+    console.error('无效的年份！');
+    process.exit(1);
+  }
+
+  // 设置年份数组
+  const YEARS = [year];
+  
+  // 设置输出目录名（使用后两位数字）
+  const dirName = String(year).slice(-2);
+
   const browser = await puppeteer.launch({
-    headless: "new",  // 使用新版无头模式
+    headless: "new",
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -751,11 +793,10 @@ async function getSubCodes(page, mainCode) {
               code: subCode
             });
 
-            // 保存当前搜索结果
-            await saveResultsToCSV(results, mainCode, subCode);
+            // 传递年份参数
+            await saveResultsToCSV(results, mainCode, subCode, year);  // 添加 year 参数
 
-            // 简单延时，避免请求过快
-            await randomSleep(1000, 2000); // 1-2秒随机延时
+            await randomSleep(1000, 2000);
           } catch (err) {
             console.error(`搜索出错 (${subCode} - ${year} - ${fundType}):`, err);
             // 继续下一个组合
@@ -769,4 +810,7 @@ async function getSubCodes(page, mainCode) {
   console.log('所有搜索完成');
   console.log(`总共处理了 ${totalResults} 条记录`);
   // await browser.close();
-})();
+}
+
+// 3. 启动程序
+main().catch(console.error);
