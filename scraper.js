@@ -68,8 +68,8 @@ const FUND_TYPES = [
 ];
 
 const CODES = [
-  // C 生命科学部 (C11-C21)
-  ...Array.from({length: 11}, (_, i) => `C${String(i + 11).padStart(2, '0')}`),
+  // C 生命科学部 (C01-C21)
+  ...Array.from({length: 21}, (_, i) => `C${String(i + 1).padStart(2, '0')}`),
   // H 医学科学部 (H01-H35)
   ...Array.from({length: 35}, (_, i) => `H${String(i + 1).padStart(2, '0')}`)
 ];
@@ -180,7 +180,7 @@ async function runSearch(page, { year, fundType, code }) {
 
           // 1. 等待页面完全加载
           await page.waitForFunction(() => {
-            // 检查页面是否完全加载
+            // 检查页面是��完全加载
             if (document.readyState !== 'complete') return false;
 
             // 检查是否有加载遮罩
@@ -387,7 +387,7 @@ async function runSearch(page, { year, fundType, code }) {
 
         results.push(...pageResults);
 
-        // 检查是否有下一��
+        // 检查是否有下一页
         const hasNextPage = await page.evaluate(() => {
           const btn = document.querySelector('button.btn-next');
           return btn && !btn.hasAttribute('disabled') && !btn.disabled;
