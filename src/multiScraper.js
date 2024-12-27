@@ -17,7 +17,7 @@ class ProxyManager {
         this.maxDelay = 3000;
         this.lastRotationTime = Date.now();
         this.rotationInterval = 10 * 60 * 1000; // 10分钟
-        this.maxRetries = 3; // 最大重试次数
+        this.maxRetries = 3;
         
         // 添加定时器
         this.rotationTimer = setInterval(() => {
@@ -30,12 +30,12 @@ class ProxyManager {
     }
 
     async getProxyUrl(retryCount = 0) {
-        // 检查是否需要更新IP
         const now = Date.now();
         if (now - this.lastRotationTime >= this.rotationInterval) {
-            console.log(`[${new Date().toISOString()}] 定时更新IP...`);
+            console.log(`[${new Date().toISOString()}] 定时更新IP触发检查`);
             this.rotateEndpoint();
             this.lastRotationTime = now;
+            console.log(`上次更新时间: ${new Date(this.lastRotationTime).toISOString()}`);
         }
 
         this.requestCount++;
@@ -69,6 +69,8 @@ class ProxyManager {
     rotateEndpoint() {
         console.log(`[${new Date().toISOString()}] 轮换到新代理`);
         this.requestCount = 0;
+        this.currentEndpointIndex = (this.currentEndpointIndex + 1) % this.maxPort;
+        return this.getRandomPort();
     }
 
     getRandomDelay() {
