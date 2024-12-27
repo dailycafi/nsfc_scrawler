@@ -56,7 +56,7 @@ function randomSleep(min, max) {
 }
 
 // 1) 配置需要搜索的参数
-const YEARS = [2022, 2023];                     // 可根据需要改
+const YEARS = [2018];                     // 可根据需要改
 const FUND_TYPES = [
   "面上项目",
   "重点项目",
@@ -387,7 +387,7 @@ async function runSearch(page, { year, fundType, code }) {
 
         results.push(...pageResults);
 
-        // 检查是否有下一页
+        // 检查是否有下一��
         const hasNextPage = await page.evaluate(() => {
           const btn = document.querySelector('button.btn-next');
           return btn && !btn.hasAttribute('disabled') && !btn.disabled;
@@ -428,7 +428,7 @@ async function runSearch(page, { year, fundType, code }) {
       }
 
       // 在重试之前等待一段时间
-      await sleep(3000 * attempt); // 逐次增加等待时间
+      await sleep(1000 * attempt); // 逐次增加等待时间
       console.log(`准备第 ${attempt + 1} 次尝试...`);
     }
   }
@@ -538,9 +538,9 @@ async function saveResultsToCSV(results, mainCode, subCode) {
   console.log(`准备保存 ${validResults.length} 条有效记录...`);
 
   // 修改主目录路径
-  const mainDir = `./22_23/${mainCode}`;
-  if (!fs.existsSync('./22_23')) {
-    fs.mkdirSync('./22_23');
+  const mainDir = `./18/${mainCode}`;
+  if (!fs.existsSync('./18')) {
+    fs.mkdirSync('./18');
   }
   if (!fs.existsSync(mainDir)) {
     fs.mkdirSync(mainDir);
@@ -700,7 +700,17 @@ async function getSubCodes(page, mainCode) {
 
 // 主函数：对 YEARS、FUND_TYPES、CODES 做多重循环
 ;(async () => {
-  const browser = await puppeteer.launch({ headless: false });
+  const browser = await puppeteer.launch({
+    headless: "new",  // 使用新版无头模式
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
+      '--window-size=1920x1080'
+    ]
+  });
   const page = await browser.newPage();
 
   // 创建个缓存对象存储已获取的子类代码
