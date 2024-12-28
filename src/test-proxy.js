@@ -1,12 +1,12 @@
 const puppeteer = require('puppeteer');
 const proxyChain = require('proxy-chain');
 
-const proxyServer = 'cn-pr.oxylabs.io:30002';
-const username = 'dailycafi_OeqdP';
+const proxyServer = 'cn-pr.oxylabs.io:32657';
+const username = 'feistar_OuMYd';
 const password = 'Cinbofei3loushab_';
 
 async function launchBrowserWithProxy() {
-    const proxy = `http://${username}:${password}@${proxyServer}`;
+    const proxy = `http://customer-${username}:${password}@${proxyServer}`;
     console.log('使用的代理:', proxy);
 
     const anonymizedProxy = await proxyChain.anonymizeProxy(proxy);

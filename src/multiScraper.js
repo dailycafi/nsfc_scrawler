@@ -1,12 +1,39 @@
-const { runSearch, runSearchByYear, ProgressTracker } = require('./scraper');
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
+const { runSearchByYear } = require('./scraper');
 const puppeteer = require('puppeteer');
 const prompt = require('prompt-sync')({ sigint: true });
 const proxyChain = require('proxy-chain');
 
+async function validateProxy(page) {
+    try {
+        await page.goto('http://ip.oxylabs.io', {
+            waitUntil: 'networkidle0',
+            timeout: 30000
+        });
+        const ip = await page.evaluate(() => document.body.innerText);
+        console.log(`代理验证成功，当前IP: ${ip}`);
+        return true;
+    } catch (error) {
+        console.error('代理验证失败:', error);
+        return false;
+    }
+}
+
 class ProxyManager {
-    constructor(config) {
-        this.username = config.username;
-        this.password = config.password;
+    constructor() {
+        if (!process.env.PROXY_CUSTOMER || !process.env.PROXY_PASSWORD) {
+            throw new Error('代理配置未找到，请检查 .env 文件');
+        }
+        
+        this.customer = process.env.PROXY_CUSTOMER;
+        this.password = process.env.PROXY_PASSWORD;
+        console.log('代理配置:', {
+            customer: this.customer,
+            password: this.password.substring(0, 1) + '****'  // 只显示部分密码
+        });
+        
         this.baseEndpoint = 'cn-pr.oxylabs.io';
         this.minPort = 30001;
         this.maxPort = 39999;
@@ -23,6 +50,8 @@ class ProxyManager {
         this.rotationTimer = setInterval(() => {
             this.forceRotateEndpoint();
         }, this.rotationInterval);
+
+        this.validateProxy = validateProxy;
     }
 
     getRandomPort() {
@@ -30,24 +59,11 @@ class ProxyManager {
     }
 
     async getProxyUrl(retryCount = 0) {
-        const now = Date.now();
-        if (now - this.lastRotationTime >= this.rotationInterval) {
-            console.log(`[${new Date().toISOString()}] 定时更新IP触发检查`);
-            this.rotateEndpoint();
-            this.lastRotationTime = now;
-            console.log(`上次更新时间: ${new Date(this.lastRotationTime).toISOString()}`);
-        }
-
-        this.requestCount++;
-        if (this.requestCount >= this.maxRequestsPerIP) {
-            this.rotateEndpoint();
-            this.requestCount = 0;
-        }
-
         const port = this.getRandomPort();
         const endpoint = `${this.baseEndpoint}:${port}`;
-        const originalProxyUrl = `http://${this.username}:${this.password}@${endpoint}`;
-
+        const originalProxyUrl = `http://${this.customer}:${this.password}@${endpoint}`;
+        console.log('尝试使用代理:', endpoint);
+        
         try {
             const anonymizedProxy = await proxyChain.anonymizeProxy(originalProxyUrl);
             return {
@@ -58,11 +74,11 @@ class ProxyManager {
                 }
             };
         } catch (error) {
-            if (retryCount >= this.maxRetries) {
-                throw new Error(`代理获取失败，已重试${this.maxRetries}次: ${error.message}`);
+            console.error('代理设置失败:', error);
+            if (retryCount < 3) {
+                return this.getProxyUrl(retryCount + 1);
             }
-            console.error(`代理获取失败，尝试第${retryCount + 1}次重试:`, error);
-            return this.getProxyUrl(retryCount + 1);
+            throw error;
         }
     }
 
@@ -117,7 +133,7 @@ class ProxyManager {
             
             const isValid = await this.validateProxy(page);
             if (!isValid) {
-                console.log('新IP验证失败，尝试重新更新...');
+                console.log('IP验证失败，尝试重新更新...');
                 await this.forceRotateEndpoint();
             }
             
@@ -144,19 +160,7 @@ async function initBrowser(proxyManager, year, retryCount = 0) {
     console.log(`[${year}] 正在使用匿名代理:`, proxyUrl);
 
     try {
-        const browser = await puppeteer.launch({
-            headless: 'new', // 使用新的 headless 模式
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--ignore-certificate-errors',
-                `--proxy-server=${proxyUrl}`
-            ],
-            ignoreHTTPSErrors: true
-        });
-
+        const browser = await createBrowser(proxyUrl);
         const page = await browser.newPage();
         await page.setExtraHTTPHeaders(headers);
 
@@ -187,48 +191,61 @@ async function closeBrowser(browser, proxyUrl) {
 }
 
 async function runScraperForYear(year, proxyManager) {
-    console.log(`[${year}] 开始处理数据`);
-    let browser, page, proxyUrl;
+    let browser = null;
+    let page = null;
+    let proxyUrl = null;
     let retryCount = 0;
-    const maxRetries = 3;
-    
+    const maxRetries = 10;
+
     while (retryCount < maxRetries) {
         try {
-            // 初始化浏览器
-            ({ browser, page, proxyUrl } = await initBrowser(proxyManager, year));
-            
-            // 传入 proxyManager 以便在需要时切换代理
+            if (!browser || !page) {
+                // 使用 initBrowser 替代直接创建浏览器
+                const browserInfo = await initBrowser(proxyManager, year);
+                browser = browserInfo.browser;
+                page = browserInfo.page;
+                proxyUrl = browserInfo.proxyUrl;
+                console.log(`[${year}] 成功初始化浏览��实例`);
+            }
+
             await runSearchByYear(page, year, {
                 onProxyError: async () => {
-                    // 关闭当前浏览器
+                    // 当发生代理错误时
+                    console.log(`[${year}] 代理出错，切换新代理...`);
                     await closeBrowser(browser, proxyUrl);
                     
-                    // 切换代理并重新初始化浏览器
-                    console.log(`[${year}] 切换代理并重新初始化浏览器...`);
-                    proxyManager.rotateEndpoint();
-                    ({ browser, page, proxyUrl } = await initBrowser(proxyManager, year));
+                    // 使用 initBrowser 获取新的浏览器实例
+                    const browserInfo = await initBrowser(proxyManager, year);
+                    browser = browserInfo.browser;
+                    page = browserInfo.page;
+                    proxyUrl = browserInfo.proxyUrl;
                     
                     return page;
                 }
             });
-            
-            await closeBrowser(browser, proxyUrl);
+
             console.log(`[${year}] 完成数据处理`);
+            await closeBrowser(browser, proxyUrl);
             return;
-            
+
         } catch (error) {
             console.error(`[${year}] 尝试 ${retryCount + 1}/${maxRetries} 失败:`, error);
+            
             if (browser) await closeBrowser(browser, proxyUrl);
+            browser = null;
+            page = null;
+            
             retryCount++;
             
             if (retryCount < maxRetries) {
-                console.log(`[${year}] 等待30秒后重试...`);
+                console.log(`[${year}] 等待30秒后使用新代理重试...`);
                 await new Promise(resolve => setTimeout(resolve, 30000));
             }
         }
     }
     
-    throw new Error(`[${year}] 达到最大重试次数，放弃处理`);
+    console.error(`[${year}] 达到最大重试次数，但将继续尝试...`);
+    return runScraperForYear(year, proxyManager);
 }
 
 async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
@@ -239,10 +256,7 @@ async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
     
     const proxyManagers = Array.from(
         { length: maxConcurrent }, 
-        () => new ProxyManager({
-            username: 'dailycafi_OeqdP',
-            password: 'Cinbofei3loushab_'
-        })
+        () => new ProxyManager()
     );
 
     try {
@@ -255,8 +269,8 @@ async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
             await Promise.all(promises);
             
             if (i + maxConcurrent < years.length) {
-                console.log('批次处理完成，等待30秒后继续...');
-                await sleep(30000);
+                console.log('批次处理完成，等待10秒后继续...');
+                await sleep(10000);
             }
         }
         
@@ -282,7 +296,7 @@ async function getInputs() {
             throw new Error('起始年份必须小于或等于结束年份');
         }
 
-        // 自动计算需要的爬虫数量
+        // 动计算需要的爬虫数量
         const maxConcurrent = endYear - startYear + 1;
         console.log(`根据年份范围，将使用 ${maxConcurrent} 个并发爬虫`);
 
@@ -307,6 +321,59 @@ async function main() {
     } catch (error) {
         console.error('程序执行出错:', error.message);
     }
+}
+
+// 添加这些辅助函数
+async function createBrowser(proxyUrl) {
+    console.log('启动浏览器，使用代理:', proxyUrl);
+    
+    return await puppeteer.launch({
+        headless: "new",
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--ignore-certificate-errors',
+            `--proxy-server=${proxyUrl}`,
+            '--window-size=1920x1080',
+            '--disable-extensions',
+            '--disable-default-apps',
+            '--disable-notifications',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-breakpad',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+            '--disable-ipc-flooding-protection',
+            '--disable-renderer-backgrounding',
+            '--disable-site-isolation-trials',
+            '--enable-features=NetworkService,NetworkServiceInProcess',
+            '--force-color-profile=srgb',
+            '--metrics-recording-only',
+            '--no-first-run',
+        ],
+        ignoreHTTPSErrors: true,
+        timeout: 30000
+    });
+}
+
+async function createPage(browser) {
+    const page = await browser.newPage();
+    
+    // 设置请求拦截
+    await page.setRequestInterception(true);
+    page.on('request', request => {
+        if (request.resourceType() === 'image' || 
+            request.resourceType() === 'stylesheet' || 
+            request.resourceType() === 'font') {
+            request.abort();
+        } else {
+            request.continue();
+        }
+    });
+
+    return page;
 }
 
 main().catch(console.error); 

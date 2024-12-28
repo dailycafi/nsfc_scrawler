@@ -343,15 +343,28 @@ async function runSearch(page, { year, fundType, code }) {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            // (A) 打开页面并等待加载完成
-            await page.goto('https://kd.nsfc.cn/finalProjectInit?advanced=true', {
-                waitUntil: 'networkidle2',
-                timeout: 30000
+            // 等待高级搜索面板加载完成
+            console.log(`[${year}] 等待高级搜索面板...`);
+            await page.waitForFunction(() => {
+                // 检查面板和表单是否都已加载
+                const panel = document.querySelector('.el-collapse-item.is-active');
+                if (!panel) return false;
+                
+                const form = panel.querySelector('.el-form');
+                if (!form) return false;
+                
+                // 确保关键输入框都已加载
+                const yearInput = form.querySelector('label[for="conclusionYear"]');
+                const typeInput = form.querySelector('label[for="projectType"]');
+                const codeInput = form.querySelector('label[for="code"]');
+                
+                return yearInput && typeInput && codeInput;
+            }, { 
+                timeout: 15000,
+                polling: 1000  // 每秒检查一次
             });
 
-            // 等待高级搜索面板加载
-            await page.waitForSelector('.el-collapse-item.is-active', { timeout: 15000 });
-            await sleep(2000);
+            await sleep(1000);  // 给页面一些稳定时间
 
             // (B) 选择结题年度
             try {
@@ -625,6 +638,12 @@ async function runSearch(page, { year, fundType, code }) {
                     await saveToFile(results, year, code);
                 }
 
+                if (results.length === 0) {
+                    console.log(`[${year}] ${code} - ${fundType}: 搜索完成但未找到任何结果`);
+                } else {
+                    console.log(`[${year}] ${code} - ${fundType}: 找到 ${results.length} 条结果`);
+                }
+
                 return results;
 
             } catch (err) {
@@ -652,6 +671,20 @@ async function runSearchByYear(page, year, options) {
     await tracker.load();
     
     console.log(`[${year}] 开始处理年份数据`);
+    
+    // 先打开页面，后续复用
+    await page.goto('https://kd.nsfc.cn/finalProjectInit?advanced=true', {
+        waitUntil: 'networkidle2',
+        timeout: 30000
+    });
+
+    // 等待高级搜索面板加载完成
+    await page.waitForFunction(() => {
+        const panel = document.querySelector('.el-collapse-item.is-active');
+        if (!panel) return false;
+        const form = panel.querySelector('.el-form');
+        return form && form.children.length > 0;
+    }, { timeout: 15000 });
     
     const validMainCodes = CODES.filter(code => !BLACKLIST_CODES.includes(code));
     
@@ -726,26 +759,49 @@ async function expandMainCategory(page, mainCode) {
 
 // 获取子类代码的函数
 async function getSubCodes(page, mainCode, year, maxRetries = 3) {
-    // 首先尝试从缓存加载
-    const cachedSubCodes = await loadSubCodesCache(mainCode, year);
-    if (cachedSubCodes) {
-        console.log(`[${year}] 使用缓存的 ${mainCode} 子类代码`);
-        return cachedSubCodes;
-    }
-
-    console.log(`[${year}] 未找到缓存，从网站获取 ${mainCode} 的子类代码...`);
-    
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            console.log(`尝试获取 ${mainCode} 子类代码 (第 ${attempt} 次尝试)...`);
-            
-            // 打开页面
-            await page.goto('https://kd.nsfc.cn/finalProjectInit?advanced=true', { 
-                waitUntil: 'networkidle2',
-                timeout: 30000  
-            });
-            await page.waitForSelector('.el-collapse-item.is-active', { timeout: 10000 });
-            await randomSleep(500, 1000);
+            // 每次尝试前都检查缓存
+            const cachedSubCodes = await loadSubCodesCache(mainCode);
+            if (cachedSubCodes) {
+                console.log(`[${year}] 使用缓存的 ${mainCode} 子类代码（可能是其他年份刚刚获取的）`);
+                return cachedSubCodes;
+            }
+
+            console.log(`[${year}] 第 ${attempt} 次尝试获取 ${mainCode} 的子类代码...`);
+
+            // 等待并处理高级搜索面板
+            let panelVisible = false;
+            for (let i = 0; i < 3; i++) {
+                try {
+                    await page.waitForSelector('.el-collapse-item', { timeout: 5000 });
+                    
+                    // 检查面板是否需要展开
+                    const needClick = await page.evaluate(() => {
+                        const panel = document.querySelector('.el-collapse-item');
+                        return panel && !panel.classList.contains('is-active');
+                    });
+
+                    if (needClick) {
+                        await page.click('.el-collapse-item__header');
+                        await sleep(1000);
+                    }
+
+                    await page.waitForSelector('.el-collapse-item.is-active', {
+                        visible: true,
+                        timeout: 5000
+                    });
+                    panelVisible = true;
+                    break;
+                } catch (err) {
+                    console.log(`[${year}] 第 ${i + 1} 次尝试展开面板失败，重试...`);
+                    await sleep(2000);
+                }
+            }
+
+            if (!panelVisible) {
+                throw new Error('无法展开高级搜索面板');
+            }
 
             // 直接点击申请代码输入框，不需要选择资助类别
             const codeInputSelector = 'label[for="code"] ~ .el-form-item__content .el-input input[readonly]';
@@ -791,62 +847,70 @@ async function getSubCodes(page, mainCode, year, maxRetries = 3) {
             await page.keyboard.press('Escape');
             
             if (subCodes.length === 0) {
-                throw new Error('未取到子类代码');
+                throw new Error(`[${year}] ${mainCode} 未取到任何子类代码`);
             }
 
-            // 获取到子类代码后保存到缓存
-            await saveSubCodesCache(mainCode, year, subCodes);
+            // 获取到子类代码后保存到全局缓存
+            if (subCodes && subCodes.length > 0) {
+                await saveSubCodesCache(mainCode, subCodes);
+                return subCodes;
+            }
             
-            return subCodes;
-
         } catch (err) {
-            console.error(`[${year}] 获取子类代码时出错 (${mainCode}) - 第 ${attempt} 次尝试:`, err);
+            console.error(`[${year}] 第 ${attempt} 次尝试失败: ${err.message}`);
+            
+            // 失败后检查其他年份的缓存
+            await sleep(2000);
+            const cachedSubCodes = await loadSubCodesCache(mainCode);
+            if (cachedSubCodes) {
+                console.log(`[${year}] 使用其他年份刚刚获取的 ${mainCode} 子类代码缓存`);
+                return cachedSubCodes;
+            }
+
             if (attempt === maxRetries) {
                 console.error(`[${year}] 获取 ${mainCode} 的子类代码失败，已达到最大重试次数`);
-                return [];
+                return [];  // 返回空数组，继续处理其他代码
             }
-            await sleep(2000 * attempt);
+            await sleep(3000 * attempt);
         }
     }
     return [];
 }
 
 // 修改缓存相关函数
-async function loadSubCodesCache(mainCode, year) {
+async function loadSubCodesCache(mainCode) {
     try {
-        const yearDir = path.join(__dirname, '..', 'results', year.toString());
-        const cacheFile = path.join(yearDir, `${mainCode}_subcodes.json`);
+        const cacheDir = path.join(__dirname, '..', 'cache');
+        const cacheFile = path.join(cacheDir, `${mainCode}_subcodes.json`);
         
         // 尝试读取缓存文件
         const data = await fs.readFile(cacheFile, 'utf8');
         const cache = JSON.parse(data);
-        console.log(`[${year}] 已从缓存加载 ${mainCode} 的子类代码`);
+        console.log(`已从全局缓存加载 ${mainCode} 的子类代码`);
         return cache.subCodes;
     } catch (error) {
         return null;
     }
 }
 
-async function saveSubCodesCache(mainCode, year, subCodes) {
+async function saveSubCodesCache(mainCode, subCodes) {
     try {
-        const yearDir = path.join(__dirname, '..', 'results', year.toString());
-        const cacheFile = path.join(yearDir, `${mainCode}_subcodes.json`);
+        const cacheDir = path.join(__dirname, '..', 'cache');
+        await fs.mkdir(cacheDir, { recursive: true });
         
-        // 确保年份目录存在（使用已有的 ensureYearDirectory 函数）
-        await ensureYearDirectory(year);
+        const cacheFile = path.join(cacheDir, `${mainCode}_subcodes.json`);
         
         await fs.writeFile(
             cacheFile,
             JSON.stringify({
                 mainCode,
-                year,
                 subCodes,
                 timestamp: new Date().toISOString()
             }, null, 2)
         );
-        console.log(`[${year}] 已缓存 ${mainCode} 的子类代码`);
+        console.log(`已缓存 ${mainCode} 的子类代码到全局缓存`);
     } catch (error) {
-        console.error(`[${year}] 缓存 ${mainCode} 的子类代码时出错:`, error);
+        console.error(`缓存 ${mainCode} 的子类代码时出错:`, error);
     }
 }
 
@@ -880,10 +944,30 @@ async function main() {
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--disable-gpu',
-            '--window-size=1920x1080'
+            '--window-size=1920x1080',
+            '--disable-extensions',
+            '--disable-default-apps',
+            '--disable-notifications',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-breakpad',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+            '--disable-ipc-flooding-protection',
+            '--disable-renderer-backgrounding',
         ]
     });
     const page = await browser.newPage();
+
+    // 禁用图片加载
+    await page.setRequestInterception(true);
+    page.on('request', request => {
+        if (request.resourceType() === 'image') {
+            request.abort();
+        } else {
+            request.continue();
+        }
+    });
 
     const subCodesCache = {};
 
@@ -907,7 +991,7 @@ async function main() {
         // 过滤掉黑名单中的子类代码
         const validSubCodes = subCodes.filter(code => !BLACKLIST_CODES.includes(code));
         
-        // 对每个有效的子类代码进行处理
+        // 对每个效的子类代码进行处理
         for (const subCode of validSubCodes) {
             console.log(`\n开始处理子类 ${subCode}...`);
 
