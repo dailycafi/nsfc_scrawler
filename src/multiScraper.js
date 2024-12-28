@@ -1,4 +1,4 @@
-const { runSearch } = require('./scraper');
+const { runSearch, runSearchByYear, ProgressTracker } = require('./scraper');
 const puppeteer = require('puppeteer');
 const prompt = require('prompt-sync')({ sigint: true });
 const proxyChain = require('proxy-chain');
@@ -189,36 +189,46 @@ async function closeBrowser(browser, proxyUrl) {
 async function runScraperForYear(year, proxyManager) {
     console.log(`[${year}] 开始处理数据`);
     let browser, page, proxyUrl;
+    let retryCount = 0;
+    const maxRetries = 3;
     
-    try {
-        // 初始化浏览器
-        ({ browser, page, proxyUrl } = await initBrowser(proxyManager, year));
-        
-        // 从 scraper.js 中导入 runSearchByYear 函数
-        const { runSearchByYear } = require('./scraper');
-        
-        // 传入 proxyManager 以便在需要时切换代理
-        await runSearchByYear(page, year, {
-            onProxyError: async () => {
-                // 关闭当前浏览器
-                await closeBrowser(browser, proxyUrl);
-                
-                // 切换代理并重新初始化浏览器
-                console.log(`[${year}] 切换代理并重新初始化浏览器...`);
-                proxyManager.rotateEndpoint();
-                ({ browser, page, proxyUrl } = await initBrowser(proxyManager, year));
-                
-                return page;
+    while (retryCount < maxRetries) {
+        try {
+            // 初始化浏览器
+            ({ browser, page, proxyUrl } = await initBrowser(proxyManager, year));
+            
+            // 传入 proxyManager 以便在需要时切换代理
+            await runSearchByYear(page, year, {
+                onProxyError: async () => {
+                    // 关闭当前浏览器
+                    await closeBrowser(browser, proxyUrl);
+                    
+                    // 切换代理并重新初始化浏览器
+                    console.log(`[${year}] 切换代理并重新初始化浏览器...`);
+                    proxyManager.rotateEndpoint();
+                    ({ browser, page, proxyUrl } = await initBrowser(proxyManager, year));
+                    
+                    return page;
+                }
+            });
+            
+            await closeBrowser(browser, proxyUrl);
+            console.log(`[${year}] 完成数据处理`);
+            return;
+            
+        } catch (error) {
+            console.error(`[${year}] 尝试 ${retryCount + 1}/${maxRetries} 失败:`, error);
+            if (browser) await closeBrowser(browser, proxyUrl);
+            retryCount++;
+            
+            if (retryCount < maxRetries) {
+                console.log(`[${year}] 等待30秒后重试...`);
+                await new Promise(resolve => setTimeout(resolve, 30000));
             }
-        });
-        
-        await closeBrowser(browser, proxyUrl);
-        console.log(`[${year}] 完成数据处理`);
-    } catch (error) {
-        console.error(`[${year}] 处理数据失败:`, error);
-        await closeBrowser(browser, proxyUrl);
-        throw error;
+        }
     }
+    
+    throw new Error(`[${year}] 达到最大重试次数，放弃处理`);
 }
 
 async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
@@ -249,8 +259,9 @@ async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
                 await sleep(30000);
             }
         }
+        
+        console.log(`所有年份 (${startYear}-${endYear}) 处理完成！`);
     } finally {
-        // 清理所有代理管理器的定时器
         proxyManagers.forEach(manager => manager.cleanup());
     }
 }

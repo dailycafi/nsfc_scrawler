@@ -4,6 +4,96 @@ const csv = require('csv-parser');
 const { createReadStream } = require('fs');
 const puppeteer = require('puppeteer');
 
+
+class ProgressTracker {
+  constructor(year) {
+      this.year = year;
+      this.progressFile = path.join(__dirname, '..', 'results', year.toString(), 'progress.json');
+      this.progress = {
+          lastMainCode: null,
+          lastSubCode: null,
+          lastFundType: null,
+          completed: {}
+      };
+  }
+
+  async load() {
+      try {
+          // 确保年份目录存在
+          await fs.mkdir(path.join(__dirname, '..', 'results', this.year.toString()), { recursive: true });
+          
+          const data = await fs.readFile(this.progressFile, 'utf8');
+          this.progress = JSON.parse(data);
+          console.log(`\n[${this.year}] 已加载进度:`);
+          this.printProgress();
+      } catch (error) {
+          console.log(`[${this.year}] 未找到进度文件，将创建新的进度记录`);
+          await this.save();
+      }
+  }
+
+  async save() {
+      await fs.writeFile(
+          this.progressFile, 
+          JSON.stringify(this.progress, null, 2)
+      );
+      console.log(`[${this.year}] 进度已保存`);
+  }
+
+  isCompleted(subCode, fundType) {
+      return this.progress.completed[`${subCode}_${fundType}`] === true;
+  }
+
+  async markAsCompleted(subCode, fundType) {
+      this.progress.completed[`${subCode}_${fundType}`] = true;
+      this.progress.lastMainCode = subCode.slice(0, 3);
+      this.progress.lastSubCode = subCode;
+      this.progress.lastFundType = fundType;
+      await this.save();
+  }
+
+  shouldProcess(mainCode, subCode) {
+      // 如果没有上次的记录，从头开始
+      if (!this.progress.lastMainCode) return true;
+      
+      // 如果当前主代码小于上次的主代码，说明已经处理过
+      if (mainCode < this.progress.lastMainCode) return false;
+      
+      // 如果是同一个主代码，检查子代码
+      if (mainCode === this.progress.lastMainCode) {
+          // 如果当前子代码小于上次的子代码，说明已经处理过
+          if (subCode < this.progress.lastSubCode) return false;
+          
+          // 如果是同一个子代码，检查是否所有基金类型都已完成
+          if (subCode === this.progress.lastSubCode) {
+              // 检查这个子代码是否有未完成的基金类型
+              for (const fundType of FUND_TYPES) {
+                  if (!this.isCompleted(subCode, fundType)) {
+                      return true; // 还有未完成的基金类型
+                  }
+              }
+              // 所有基金类型都完成了，可以处理下一个子代码
+              return false;
+          }
+          
+          // 如果是更大的子代码，继续处理
+          return true;
+      }
+      
+      // 如果是更大的主代码，继续处理
+      return true;
+  }
+
+  printProgress() {
+      console.log(`年份: ${this.year}`);
+      console.log(`最后处理的主代码: ${this.progress.lastMainCode || '无'}`);
+      console.log(`最后处理的子代码: ${this.progress.lastSubCode || '无'}`);
+      console.log(`最后处理的基金类型: ${this.progress.lastFundType || '无'}`);
+      const completedCount = Object.keys(this.progress.completed).length;
+      console.log(`已完成的组合数: ${completedCount}\n`);
+  }
+}
+
 // 全局结果数组
 const results = [];
 
@@ -65,7 +155,7 @@ function sleep(ms) {
 
 function randomSleep(min, max) {
     const delay = Math.floor(Math.random() * (max - min + 1)) + min;
-    console.log(`等待 ${delay/1000} 秒...`);
+    // console.log(`等待 ${delay/1000} 秒...`);
     return sleep(delay);
 }
 
@@ -144,7 +234,7 @@ async function saveToFile(newData, year, code) {
         ].join('\n');
 
         await fs.writeFile(filePath, csvContent);
-        console.log(`数据已保��到: ${filePath}`);
+        console.log(`数据已保存到: ${filePath}`);
         console.log(`新增数据条数: ${uniqueNewData.length}`);
         console.log(`总数据条数: ${allData.length}`);
         totalResults += uniqueNewData.length;
@@ -188,7 +278,7 @@ async function retryOperation(operation, maxRetries = 3, description = '') {
 // 修改选择资助类别的部分
 async function selectFundType(page, fundType) {
     return retryOperation(async () => {
-        // 1. 等待页面稳定
+        // 1. 等待页面定
         await page.waitForFunction(() => {
             const loadingMasks = document.querySelectorAll('.el-loading-mask');
             return Array.from(loadingMasks).every(mask => 
@@ -309,7 +399,7 @@ async function runSearch(page, { year, fundType, code }) {
             await selectFundType(page, fundType);
 
             // (D) 申请代码处理
-            console.log('准备点击申请代码输入框...');
+            console.log('准备击申请代码输入框...');
 
             treeVisible = false;
             for (let attempt = 1; attempt <= 3; attempt++) {
@@ -426,7 +516,7 @@ async function runSearch(page, { year, fundType, code }) {
                 // 使用更精确的选择器
                 const searchButton = await page.$('button.el-button.SolidBtn span');
                 if (!searchButton) {
-                    // 备用选择器：通过文本内容查找
+                    // 备用选择器：通过文本内容找
                     const buttons = await page.$$('button.el-button span');
                     let found = false;
                     for (const button of buttons) {
@@ -556,64 +646,66 @@ async function runSearch(page, { year, fundType, code }) {
 
 
 // 添加新的年份处理函数
-async function runSearchByYear(page, year, { onProxyError }) {
+async function runSearchByYear(page, year, options) {
+    const { onProxyError } = options;
+    const tracker = new ProgressTracker(year);
+    await tracker.load();
+    
     console.log(`[${year}] 开始处理年份数据`);
     
     const validMainCodes = CODES.filter(code => !BLACKLIST_CODES.includes(code));
-    console.log(`[${year}] 总共 ${CODES.length} 个主类代码，过滤掉 ${CODES.length - validMainCodes.length} 个黑名单代码`);
     
-    let currentMainCodeIndex = 0;
-    while (currentMainCodeIndex < validMainCodes.length) {
-        const mainCode = validMainCodes[currentMainCodeIndex];
-        
+    for (const mainCode of validMainCodes) {
         try {
-            console.log(`[${year}] 尝试获取 ${mainCode} 的子类列表...`);
-            const subCodes = await getSubCodes(page, mainCode);
+            console.log(`[${year}] 获取 ${mainCode} 的子类列表...`);
+            const subCodes = await getSubCodes(page, mainCode, year);
             
-            // 验证获取到的子类是否有效
             if (!subCodes || subCodes.length === 0) {
-                console.error(`[${year}] ${mainCode} 未获取到有效子类，切换代理重试...`);
-                page = await onProxyError();
-                await sleep(5000);
-                continue; // 重试当前主类
+                throw new Error(`获取 ${mainCode} 子类失败`);
             }
             
-            console.log(`[${year}] ${mainCode} 获取到 ${subCodes.length} 个子类`);
-            
-            // 过滤掉黑名单中的子类代码
             const validSubCodes = subCodes.filter(code => !BLACKLIST_CODES.includes(code));
-            if (validSubCodes.length < subCodes.length) {
-                console.log(`[${year}] ${mainCode} 过滤掉 ${subCodes.length - validSubCodes.length} 个黑名单子类`);
-            }
             
-            // 对每个有效��类遍历所有基金类型
             for (const subCode of validSubCodes) {
+                if (!tracker.shouldProcess(mainCode, subCode)) {
+                    console.log(`[${year}] 跳过已处理的子代码 ${subCode}`);
+                    continue;
+                }
+
                 for (const fundType of FUND_TYPES) {
+                    if (tracker.isCompleted(subCode, fundType)) {
+                        console.log(`[${year}] 跳过已完成的组合: ${subCode}-${fundType}`);
+                        continue;
+                    }
+
                     try {
                         console.log(`[${year}] 处理 ${fundType}-${subCode}`);
                         await runSearch(page, { year, fundType, code: subCode });
+                        await tracker.markAsCompleted(subCode, fundType);
                         await randomSleep(1000, 2000);
                     } catch (error) {
                         console.error(`[${year}] ${fundType}-${subCode} 处理失败:`, error);
                         if (error.message.includes('net::') || error.message.includes('proxy')) {
-                            console.log(`[${year}] 网络错误，切换代理重试...`);
-                            page = await onProxyError();
-                            await sleep(5000);
-                            continue; // 重试当前组合
+                            if (onProxyError) {
+                                page = await onProxyError();
+                                await sleep(5000);
+                                try {
+                                    await runSearch(page, { year, fundType, code: subCode });
+                                    await tracker.markAsCompleted(subCode, fundType);
+                                } catch (retryError) {
+                                    console.error(`[${year}] ${fundType}-${subCode} 重试失败，停止处理`);
+                                    return;
+                                }
+                            }
+                        } else {
+                            return;
                         }
                     }
                 }
             }
-            
-            // 只有成功完成当前主类的所有处理才增加索引
-            currentMainCodeIndex++;
-            
         } catch (error) {
-            console.error(`[${year}] ${mainCode} 获取子类失败:`, error);
-            console.log(`[${year}] 切换代理并重试 ${mainCode}...`);
-            page = await onProxyError();
-            await sleep(5000);
-            // 不增加 currentMainCodeIndex，继续尝试当前主类
+            console.error(`[${year}] ${mainCode} 处理失败:`, error);
+            return;
         }
     }
 }
@@ -633,7 +725,16 @@ async function expandMainCategory(page, mainCode) {
 }
 
 // 获取子类代码的函数
-async function getSubCodes(page, mainCode, maxRetries = 3) {
+async function getSubCodes(page, mainCode, year, maxRetries = 3) {
+    // 首先尝试从缓存加载
+    const cachedSubCodes = await loadSubCodesCache(mainCode, year);
+    if (cachedSubCodes) {
+        console.log(`[${year}] 使用缓存的 ${mainCode} 子类代码`);
+        return cachedSubCodes;
+    }
+
+    console.log(`[${year}] 未找到缓存，从网站获取 ${mainCode} 的子类代码...`);
+    
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             console.log(`尝试获取 ${mainCode} 子类代码 (第 ${attempt} 次尝试)...`);
@@ -641,7 +742,7 @@ async function getSubCodes(page, mainCode, maxRetries = 3) {
             // 打开页面
             await page.goto('https://kd.nsfc.cn/finalProjectInit?advanced=true', { 
                 waitUntil: 'networkidle2',
-                timeout: 10000  
+                timeout: 30000  
             });
             await page.waitForSelector('.el-collapse-item.is-active', { timeout: 10000 });
             await randomSleep(500, 1000);
@@ -690,21 +791,63 @@ async function getSubCodes(page, mainCode, maxRetries = 3) {
             await page.keyboard.press('Escape');
             
             if (subCodes.length === 0) {
-                throw new Error('未获取到子类代码');
+                throw new Error('未取到子类代码');
             }
+
+            // 获取到子类代码后保存到缓存
+            await saveSubCodesCache(mainCode, year, subCodes);
             
             return subCodes;
 
         } catch (err) {
-            console.error(`获取子类代码时出错 (${mainCode}) - 第 ${attempt} 次尝试:`, err);
+            console.error(`[${year}] 获取子类代码时出错 (${mainCode}) - 第 ${attempt} 次尝试:`, err);
             if (attempt === maxRetries) {
-                console.error(`获取 ${mainCode} 的子类代码失败，已达到最大重试次数`);
+                console.error(`[${year}] 获取 ${mainCode} 的子类代码失败，已达到最大重试次数`);
                 return [];
             }
-            await sleep(1000 * attempt);
+            await sleep(2000 * attempt);
         }
     }
     return [];
+}
+
+// 修改缓存相关函数
+async function loadSubCodesCache(mainCode, year) {
+    try {
+        const yearDir = path.join(__dirname, '..', 'results', year.toString());
+        const cacheFile = path.join(yearDir, `${mainCode}_subcodes.json`);
+        
+        // 尝试读取缓存文件
+        const data = await fs.readFile(cacheFile, 'utf8');
+        const cache = JSON.parse(data);
+        console.log(`[${year}] 已从缓存加载 ${mainCode} 的子类代码`);
+        return cache.subCodes;
+    } catch (error) {
+        return null;
+    }
+}
+
+async function saveSubCodesCache(mainCode, year, subCodes) {
+    try {
+        const yearDir = path.join(__dirname, '..', 'results', year.toString());
+        const cacheFile = path.join(yearDir, `${mainCode}_subcodes.json`);
+        
+        // 确保年份目录存在（使用已有的 ensureYearDirectory 函数）
+        await ensureYearDirectory(year);
+        
+        await fs.writeFile(
+            cacheFile,
+            JSON.stringify({
+                mainCode,
+                year,
+                subCodes,
+                timestamp: new Date().toISOString()
+            }, null, 2)
+        );
+        console.log(`[${year}] 已缓存 ${mainCode} 的子类代码`);
+    } catch (error) {
+        console.error(`[${year}] 缓存 ${mainCode} 的子类代码时出错:`, error);
+    }
 }
 
 // 主函数
@@ -750,7 +893,7 @@ async function main() {
 
         // 检查缓存中是否已有该主类的子类代码
         if (!subCodesCache[mainCode]) {
-            const subCodes = await getSubCodes(page, mainCode);
+            const subCodes = await getSubCodes(page, mainCode, year);
             console.log(`${mainCode} 下获取到的子类代码：`, subCodes);
             subCodesCache[mainCode] = subCodes;
         }
@@ -799,7 +942,8 @@ module.exports = {
     runSearchByYear,
     FUND_TYPES,
     CODES,
-    BLACKLIST_CODES
+    BLACKLIST_CODES,
+    ProgressTracker
 };
 
 // 如果直接运行此文件
