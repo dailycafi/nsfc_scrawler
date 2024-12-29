@@ -2,6 +2,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const { runSearchByYear } = require('./scraper');
+const { sleep, randomSleep } = require('./utils');
 const puppeteer = require('puppeteer');
 const prompt = require('prompt-sync')({ sigint: true });
 const proxyChain = require('proxy-chain');
@@ -52,6 +53,10 @@ class ProxyManager {
         }, this.rotationInterval);
 
         this.validateProxy = validateProxy;
+
+        // 添加代理状态追踪
+        this.proxyStatus = new Map(); // 追踪每个代理的状态
+        this.failedAttempts = new Map(); // 追踪失败次数
     }
 
     getRandomPort() {
@@ -61,25 +66,43 @@ class ProxyManager {
     async getProxyUrl(retryCount = 0) {
         const port = this.getRandomPort();
         const endpoint = `${this.baseEndpoint}:${port}`;
+        
+        // 检查这个代理是否已经失败过多次
+        if (this.failedAttempts.get(endpoint) >= 3) {
+            console.log(`代理 ${endpoint} 失败次数过多，尝试新的代理...`);
+            return this.getProxyUrl(retryCount);
+        }
+
         const originalProxyUrl = `http://${this.customer}:${this.password}@${endpoint}`;
         console.log('尝试使用代理:', endpoint);
         
         try {
             const anonymizedProxy = await proxyChain.anonymizeProxy(originalProxyUrl);
+            this.proxyStatus.set(endpoint, 'active');
             return {
                 proxyUrl: anonymizedProxy,
+                endpoint,
                 headers: {
                     'x-oxylabs-user-agent-type': 'desktop_chrome',
                     'x-oxylabs-geo-location': 'China'
                 }
             };
         } catch (error) {
-            console.error('代理设置失败:', error);
-            if (retryCount < 3) {
+            // 记录失败次数
+            this.failedAttempts.set(endpoint, (this.failedAttempts.get(endpoint) || 0) + 1);
+            
+            if (retryCount < this.maxRetries) {
+                console.log(`代理 ${endpoint} 设置失败，尝试新的代理...`);
+                await sleep(1000 * (retryCount + 1));
                 return this.getProxyUrl(retryCount + 1);
             }
             throw error;
         }
+    }
+
+    async markProxyAsFailed(endpoint) {
+        this.proxyStatus.set(endpoint, 'failed');
+        this.failedAttempts.set(endpoint, (this.failedAttempts.get(endpoint) || 0) + 1);
     }
 
     rotateEndpoint() {
@@ -154,37 +177,6 @@ class ProxyManager {
     }
 }
 
-async function initBrowser(proxyManager, year, retryCount = 0) {
-    const maxRetries = 3;
-    const { proxyUrl, headers } = await proxyManager.getProxyUrl();
-    console.log(`[${year}] 正在使用匿名代理:`, proxyUrl);
-
-    try {
-        const browser = await createBrowser(proxyUrl);
-        const page = await browser.newPage();
-        await page.setExtraHTTPHeaders(headers);
-
-        // 验证代理是否可用
-        const isValid = await proxyManager.validateProxy(page);
-        if (!isValid) {
-            await closeBrowser(browser, proxyUrl);
-            if (retryCount >= maxRetries) {
-                throw new Error('代理验证失败次数过多');
-            }
-            console.log(`[${year}] 代理验证失败，尝试新的代理...`);
-            return initBrowser(proxyManager, year, retryCount + 1);
-        }
-
-        return { browser, page, proxyUrl };
-    } catch (err) {
-        console.error(`[${year}] 初始化浏览器失败:`, err);
-        if (retryCount >= maxRetries) {
-            throw err;
-        }
-        return initBrowser(proxyManager, year, retryCount + 1);
-    }
-}
-
 async function closeBrowser(browser, proxyUrl) {
     await browser.close();
     await proxyChain.closeAnonymizedProxy(proxyUrl, true);
@@ -194,36 +186,71 @@ async function runScraperForYear(year, proxyManager) {
     let browser = null;
     let page = null;
     let proxyUrl = null;
+    let endpoint = null;
     let retryCount = 0;
     const maxRetries = 10;
 
     while (retryCount < maxRetries) {
         try {
             if (!browser || !page) {
-                // 使用 initBrowser 替代直接创建浏览器
-                const browserInfo = await initBrowser(proxyManager, year);
-                browser = browserInfo.browser;
-                page = browserInfo.page;
-                proxyUrl = browserInfo.proxyUrl;
-                console.log(`[${year}] 成功初始化浏览��实例`);
+                const proxyInfo = await proxyManager.getProxyUrl();
+                proxyUrl = proxyInfo.proxyUrl;
+                endpoint = proxyInfo.endpoint;
+                
+                browser = await createBrowser(proxyUrl);
+                page = await createPage(browser);
+                await page.setExtraHTTPHeaders(proxyInfo.headers);
+
+                // 设置更长的超时时间
+                await page.setDefaultNavigationTimeout(60000);
+                await page.setDefaultTimeout(60000);
+
+                // 修改重定向检测的处理方式
+                let redirected = false;
+                page.on('framenavigated', frame => {
+                    const url = frame.url();
+                    if (url === 'https://kd.nsfc.cn/') {
+                        console.log(`[${year}] 检测到重定向到首页，准备切换代理重试...`);
+                        frame.page().evaluate(() => window.stop());
+                        redirected = true;
+                    }
+                });
+
+                const isValid = await proxyManager.validateProxy(page);
+                if (!isValid) {
+                    await proxyManager.markProxyAsFailed(endpoint);
+                    throw new Error('代理验证失败');
+                }
             }
 
+            // 执行搜索
             await runSearchByYear(page, year, {
                 onProxyError: async () => {
-                    // 当发生代理错误时
                     console.log(`[${year}] 代理出错，切换新代理...`);
+                    await proxyManager.markProxyAsFailed(endpoint);
                     await closeBrowser(browser, proxyUrl);
                     
-                    // 使用 initBrowser 获取新的浏览器实例
-                    const browserInfo = await initBrowser(proxyManager, year);
-                    browser = browserInfo.browser;
-                    page = browserInfo.page;
-                    proxyUrl = browserInfo.proxyUrl;
+                    const proxyInfo = await proxyManager.getProxyUrl();
+                    proxyUrl = proxyInfo.proxyUrl;
+                    endpoint = proxyInfo.endpoint;
+                    
+                    browser = await createBrowser(proxyUrl);
+                    page = await createPage(browser);
+                    await page.setExtraHTTPHeaders(proxyInfo.headers);
+                    await page.setDefaultNavigationTimeout(60000);
+                    await page.setDefaultTimeout(60000);
                     
                     return page;
-                }
+                },
+                checkRedirect: () => redirected  // 添加重定向检查
             });
 
+            if (redirected) {
+                throw new Error('页面重定向到首页');
+            }
+
+            // 如果执行到这里，说明成功了，重置重试计数
+            retryCount = 0;
             console.log(`[${year}] 完成数据处理`);
             await closeBrowser(browser, proxyUrl);
             return;
@@ -231,21 +258,23 @@ async function runScraperForYear(year, proxyManager) {
         } catch (error) {
             console.error(`[${year}] 尝试 ${retryCount + 1}/${maxRetries} 失败:`, error);
             
-            if (browser) await closeBrowser(browser, proxyUrl);
-            browser = null;
-            page = null;
+            if (browser) {
+                await closeBrowser(browser, proxyUrl);
+                browser = null;
+                page = null;
+            }
             
             retryCount++;
+            const waitTime = error.name === 'TimeoutError' || error.message === '页面重定向到首页'
+                ? 10000 * retryCount  // 超时或重定向错误等待较短时间
+                : 30000 * retryCount; // 其他错误等待较长时间
             
-            if (retryCount < maxRetries) {
-                console.log(`[${year}] 等待30秒后使用新代理重试...`);
-                await new Promise(resolve => setTimeout(resolve, 30000));
-            }
+            console.log(`[${year}] 等待 ${waitTime/1000} 秒后重试...`);
+            await sleep(waitTime);
         }
     }
     
-    console.error(`[${year}] 达到最大重试次数，但将继续尝试...`);
-    return runScraperForYear(year, proxyManager);
+    throw new Error(`[${year}] 达到最大重试次数`);
 }
 
 async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
@@ -269,8 +298,8 @@ async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
             await Promise.all(promises);
             
             if (i + maxConcurrent < years.length) {
-                console.log('批次处理完成，等待10秒后继续...');
-                await sleep(10000);
+                console.log('批次处理完成，等待5到10秒后继续...');
+                await randomSleep(5000, 10000);
             }
         }
         
@@ -328,7 +357,8 @@ async function createBrowser(proxyUrl) {
     console.log('启动浏览器，使用代理:', proxyUrl);
     
     return await puppeteer.launch({
-        headless: "new",
+        // headless: "new",
+        headless: false,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -354,7 +384,7 @@ async function createBrowser(proxyUrl) {
             '--no-first-run',
         ],
         ignoreHTTPSErrors: true,
-        timeout: 30000
+        timeout: 60000
     });
 }
 
