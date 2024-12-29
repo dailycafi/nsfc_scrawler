@@ -689,6 +689,27 @@ async function waitForPageLoad(page, timeout = 30000) {
     }
 }
 
+// 添加新的辅助函数
+async function setupPage(browser) {
+    const page = await browser.newPage();
+    
+    // 设置自定义 user agent
+    const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36';
+    await page.setUserAgent(customUA);
+    
+    // 设置请求拦截
+    await page.setRequestInterception(true);
+    page.on('request', request => {
+        if (request.resourceType() === 'image') {
+            request.abort();
+        } else {
+            request.continue();
+        }
+    });
+    
+    return page;
+}
+
 // 主函数
 async function main() {
     const readline = require('readline').createInterface({
@@ -730,35 +751,15 @@ async function main() {
             '--disable-renderer-backgrounding',
         ]
     });
-    const page = await browser.newPage();
-
-    // 禁用图片加载
-    await page.setRequestInterception(true);
-    page.on('request', request => {
-        if (request.resourceType() === 'image') {
-            request.abort();
-        } else {
-            request.continue();
-        }
-    });
+    
+    let page = await setupPage(browser);
 
     try {
         await runSearchByYear(page, year, {
             onProxyError: async () => {
-                // 处理代理错误的逻辑
                 console.log('检测到代理错误，重新创建页面...');
                 await page.close();
-                const newPage = await browser.newPage();
-                // 重新设置请求拦截
-                await newPage.setRequestInterception(true);
-                newPage.on('request', request => {
-                    if (request.resourceType() === 'image') {
-                        request.abort();
-                    } else {
-                        request.continue();
-                    }
-                });
-                return newPage;
+                return await setupPage(browser);
             }
         });
     } catch (error) {
