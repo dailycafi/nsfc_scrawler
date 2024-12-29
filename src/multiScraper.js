@@ -4,7 +4,6 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const { runSearchByYear } = require('./scraper');
 const { sleep, randomSleep } = require('./utils');
 const puppeteer = require('puppeteer');
-const prompt = require('prompt-sync')({ sigint: true });
 const proxyChain = require('proxy-chain');
 
 async function validateProxy(page) {
@@ -57,6 +56,7 @@ class ProxyManager {
         // 添加代理状态追踪
         this.proxyStatus = new Map(); // 追踪每个代理的状态
         this.failedAttempts = new Map(); // 追踪失败次数
+        this.proxyPerformance = new Map(); // 追踪代理性能
     }
 
     getRandomPort() {
@@ -64,35 +64,30 @@ class ProxyManager {
     }
 
     async getProxyUrl(retryCount = 0) {
-        const port = this.getRandomPort();
-        const endpoint = `${this.baseEndpoint}:${port}`;
-        
-        // 检查这个代理是否已经失败过多次
-        if (this.failedAttempts.get(endpoint) >= 3) {
-            console.log(`代理 ${endpoint} 失败次数过多，尝试新的代理...`);
-            return this.getProxyUrl(retryCount);
-        }
-
-        const originalProxyUrl = `http://${this.customer}:${this.password}@${endpoint}`;
-        console.log('尝试使用代理:', endpoint);
-        
         try {
+            const port = this.getRandomPort();
+            const endpoint = `${this.baseEndpoint}:${port}`;
+            const originalProxyUrl = `http://customer-${this.customer}:${this.password}@${endpoint}`;
+            
+            console.log('\n=== 代理信息 ===');
+            console.log(`使用的代理: ${endpoint}`);
+            console.log('================\n');
+            
             const anonymizedProxy = await proxyChain.anonymizeProxy(originalProxyUrl);
-            this.proxyStatus.set(endpoint, 'active');
+            console.log('匿名代理URL:', anonymizedProxy);
+            
             return {
                 proxyUrl: anonymizedProxy,
-                endpoint,
+                endpoint: endpoint,
                 headers: {
                     'x-oxylabs-user-agent-type': 'desktop_chrome',
                     'x-oxylabs-geo-location': 'China'
                 }
             };
         } catch (error) {
-            // 记录失败次数
-            this.failedAttempts.set(endpoint, (this.failedAttempts.get(endpoint) || 0) + 1);
-            
+            console.error('代理设置失败:', error);
             if (retryCount < this.maxRetries) {
-                console.log(`代理 ${endpoint} 设置失败，尝试新的代理...`);
+                console.log(`尝试新的代理... (${retryCount + 1}/${this.maxRetries})`);
                 await sleep(1000 * (retryCount + 1));
                 return this.getProxyUrl(retryCount + 1);
             }
@@ -175,6 +170,17 @@ class ProxyManager {
             clearInterval(this.rotationTimer);
         }
     }
+
+    async trackProxyPerformance(endpoint, startTime) {
+        const responseTime = Date.now() - startTime;
+        this.proxyPerformance.set(endpoint, responseTime);
+        
+        // 如果响应时间过长，标记为较差的代理
+        if (responseTime > 10000) { // 超过10秒
+            console.log(`代理 ${endpoint} 响应时间过长: ${responseTime}ms`);
+            await this.markProxyAsFailed(endpoint);
+        }
+    }
 }
 
 async function closeBrowser(browser, proxyUrl) {
@@ -189,6 +195,7 @@ async function runScraperForYear(year, proxyManager) {
     let endpoint = null;
     let retryCount = 0;
     const maxRetries = 10;
+    const targetUrl = 'https://kd.nsfc.cn/finalProjectInit?advanced=true';
 
     while (retryCount < maxRetries) {
         try {
@@ -205,22 +212,58 @@ async function runScraperForYear(year, proxyManager) {
                 await page.setDefaultNavigationTimeout(60000);
                 await page.setDefaultTimeout(60000);
 
-                // 修改重定向检测的处理方式
-                let redirected = false;
-                page.on('framenavigated', frame => {
-                    const url = frame.url();
-                    if (url === 'https://kd.nsfc.cn/') {
-                        console.log(`[${year}] 检测到重定向到首页，准备切换代理重试...`);
-                        frame.page().evaluate(() => window.stop());
-                        redirected = true;
+                // 设置请求拦截
+                await page.setRequestInterception(true);
+                page.on('request', request => {
+                    // 检查请求是否已经被处理
+                    if (request.isInterceptResolutionHandled()) {
+                        return;
+                    }
+
+                    const url = request.url();
+                    try {
+                        if (url === 'https://kd.nsfc.cn/') {
+                            console.log(`[${year}] 拦截到重定向请求，继续加载原始页面...`);
+                            request.abort();
+                        } else if (request.resourceType() === 'image' || 
+                                 request.resourceType() === 'stylesheet' || 
+                                 request.resourceType() === 'font') {
+                            request.abort();
+                        } else {
+                            request.continue();
+                        }
+                    } catch (error) {
+                        // 如果请求已经被处理，忽略错误
+                        if (!error.message.includes('Request is already handled')) {
+                            console.error('请求处理错误:', error);
+                        }
                     }
                 });
 
-                const isValid = await proxyManager.validateProxy(page);
-                if (!isValid) {
-                    await proxyManager.markProxyAsFailed(endpoint);
-                    throw new Error('代理验证失败');
-                }
+                // 监控所有响应
+                page.on('response', response => {
+                    const status = response.status();
+                    const url = response.url();
+                    if (status >= 300 && status <= 399) {
+                        console.log(`[${year}] 检测到重定向响应: ${status} -> ${url}`);
+                    }
+                });
+            }
+
+            console.log(`[${year}] 尝试访问页面...`);
+            const response = await page.goto(targetUrl, {
+                waitUntil: 'networkidle0',
+                timeout: 60000
+            });
+
+            if (response.status() >= 300 && response.status() <= 399) {
+                throw new Error('页面返回重定向状态码');
+            }
+
+            // 验证页面内容
+            const pageUrl = page.url();
+            if (pageUrl === 'https://kd.nsfc.cn/') {
+                throw new Error('页面已被重定向到首页');
             }
 
             // 执行搜索
@@ -237,19 +280,11 @@ async function runScraperForYear(year, proxyManager) {
                     browser = await createBrowser(proxyUrl);
                     page = await createPage(browser);
                     await page.setExtraHTTPHeaders(proxyInfo.headers);
-                    await page.setDefaultNavigationTimeout(60000);
-                    await page.setDefaultTimeout(60000);
-                    
                     return page;
-                },
-                checkRedirect: () => redirected  // 添加重定向检查
+                }
             });
 
-            if (redirected) {
-                throw new Error('页面重定向到首页');
-            }
-
-            // 如果执行到这里，说明成功了，重置重试计数
+            // 如果执行到这里，说明成功了
             retryCount = 0;
             console.log(`[${year}] 完成数据处理`);
             await closeBrowser(browser, proxyUrl);
@@ -265,10 +300,7 @@ async function runScraperForYear(year, proxyManager) {
             }
             
             retryCount++;
-            const waitTime = error.name === 'TimeoutError' || error.message === '页面重定向到首页'
-                ? 10000 * retryCount  // 超时或重定向错误等待较短时间
-                : 30000 * retryCount; // 其他错误等待较长时间
-            
+            const waitTime = 10000 * retryCount;
             console.log(`[${year}] 等待 ${waitTime/1000} 秒后重试...`);
             await sleep(waitTime);
         }
@@ -310,28 +342,43 @@ async function runMultiYearScraper(startYear, endYear, maxConcurrent = 3) {
 }
 
 async function getInputs() {
+    const readline = require('readline').createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+
+    const question = (query) => new Promise((resolve) => {
+        readline.question(query, (answer) => {
+            resolve(answer);
+        });
+    });
+
     try {
-        const startYear = parseInt(prompt('请输入起始年份 (例如: 2005): '));
+        console.log('请输入起始年份 (例如: 2005)');
+        const startYear = parseInt(await question('> '));
         if (isNaN(startYear)) {
             throw new Error('起始年份必须是有效的数字');
         }
 
-        const endYear = parseInt(prompt('请输入结束年份 (例如: 2015): '));
+        console.log('\n请输入结束年份 (例如: 2015)');
+        const endYear = parseInt(await question('> '));
         if (isNaN(endYear)) {
             throw new Error('结束年份必须是有效的数字');
         }
+
+        readline.close();
 
         if (startYear > endYear) {
             throw new Error('起始年份必须小于或等于结束年份');
         }
 
-        // 动计算需要的爬虫数量
         const maxConcurrent = endYear - startYear + 1;
-        console.log(`根据年份范围，将使用 ${maxConcurrent} 个并发爬虫`);
+        console.log(`\n根据年份范围，将使用 ${maxConcurrent} 个并发爬虫`);
 
         return { startYear, endYear, maxConcurrent };
     } catch (error) {
         console.error('输入错误:', error.message);
+        readline.close();
         process.exit(1);
     }
 }
@@ -357,34 +404,15 @@ async function createBrowser(proxyUrl) {
     console.log('启动浏览器，使用代理:', proxyUrl);
     
     return await puppeteer.launch({
-        // headless: "new",
-        headless: false,
+        headless: true,
         args: [
+            `--proxy-server=${proxyUrl}`,
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
-            '--disable-gpu',
             '--ignore-certificate-errors',
-            `--proxy-server=${proxyUrl}`,
-            '--window-size=1920x1080',
-            '--disable-extensions',
-            '--disable-default-apps',
-            '--disable-notifications',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-breakpad',
-            '--disable-component-extensions-with-background-pages',
-            '--disable-features=TranslateUI,BlinkGenPropertyTrees',
-            '--disable-ipc-flooding-protection',
-            '--disable-renderer-backgrounding',
-            '--disable-site-isolation-trials',
-            '--enable-features=NetworkService,NetworkServiceInProcess',
-            '--force-color-profile=srgb',
-            '--metrics-recording-only',
-            '--no-first-run',
         ],
-        ignoreHTTPSErrors: true,
-        timeout: 60000
+        ignoreHTTPSErrors: true
     });
 }
 
