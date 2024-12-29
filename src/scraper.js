@@ -120,23 +120,46 @@ async function expandMainCategory(page, mainCode) {
 
 // 修改选择具体代码的部分
 async function selectCode(page, code) {
-    const codeNodes = await page.$$('.ant-tree-title');
-    for (const node of codeNodes) {
-        const titleText = await node.evaluate(el => el.textContent.trim());
-        if (titleText.startsWith(code)) {
-            // 检查是否是可点击的叶子节点
-            const isLeaf = await node.evaluate(el => {
-                const switcher = el.parentElement.previousElementSibling;
-                return switcher.classList.contains('ant-tree-switcher-noop');
-            });
-            
-            if (isLeaf) {
-                await node.click();
-                return true;
+    try {
+        // 等待元素可见
+        await page.waitForFunction((targetCode) => {
+            const nodes = document.querySelectorAll('.ant-tree-title');
+            return Array.from(nodes).some(node => 
+                node.textContent.trim().startsWith(targetCode));
+        }, { timeout: 5000 }, code);
+
+        // 使用evaluate来确保在页面上下文中执行点击
+        const clicked = await page.evaluate((targetCode) => {
+            const nodes = document.querySelectorAll('.ant-tree-title');
+            for (const node of nodes) {
+                if (node.textContent.trim().startsWith(targetCode)) {
+                    const wrapper = node.closest('.ant-tree-node-content-wrapper');
+                    if (wrapper) {
+                        // 创建并触发点击事件
+                        const clickEvent = new MouseEvent('click', {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true,
+                            buttons: 1
+                        });
+                        wrapper.dispatchEvent(clickEvent);
+                        return true;
+                    }
+                }
             }
+            return false;
+        }, code);
+
+        if (!clicked) {
+            console.log(`未能点击代码: ${code}`);
+            return false;
         }
+
+        return true;
+    } catch (error) {
+        console.error(`选择代码 ${code} 时出错:`, error);
+        return false;
     }
-    return false;
 }
 
 // 2) 通用搜索函数
@@ -573,26 +596,24 @@ async function runSearchByYear(page, year, options) {
     // 遍历每个主类和子类
     let shouldStart = false; // 添加标志
     for (const [mainCode, { mainName, subCodes }] of subCodesMap) {
-        // 如果有上次的进度，检查是否应该开始处理
+        // 如果有 lastSubCode，检查是否应该开始处理
         if (tracker.progress.lastSubCode) {
-            const lastDepartment = tracker.progress.lastSubCode[0]; // 获取部门代码 ('C' 或 'H')
-            const currentDepartment = mainCode[0];
+            // 保持完整代码的比较，不要去掉字母前缀
+            const lastSubCode = tracker.progress.lastSubCode;
             
-            if (!shouldStart) {
-                // 如果当前部门在上次处理的部门之前，跳过
-                if (currentDepartment < lastDepartment) {
-                    console.log(`跳过部门 ${currentDepartment} 的主类 ${mainCode} (${mainName})...`);
-                    continue;
-                }
-                shouldStart = true;
+            // 如果所有当前子代码都小于等于 lastSubCode，跳过这个主类
+            if (subCodes.every(sc => sc.code <= lastSubCode)) {
+                console.log(`跳过已处理的主类 ${mainCode} (${mainName})...`);
+                continue;
             }
         }
 
         console.log(`\n开始处理主类 ${mainCode} (${mainName})...`);
 
         for (const { code: subCode, name: subName } of subCodes) {
-            if (tracker.isSubCodeDone(mainCode, subCode)) {
-                console.log(`[${year}] 跳过已完成的子代码 ${subCode} (${subName})`);
+            // 直接比较完整的代码字符串
+            if (tracker.progress.lastSubCode && subCode <= tracker.progress.lastSubCode) {
+                console.log(`[${year}] 跳过已处理的子代码 ${subCode} (${subName})`);
                 continue;
             }
 
@@ -731,7 +752,7 @@ async function main() {
     }
 
     const browser = await puppeteer.launch({
-        headless: "new",
+        headless: false,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
