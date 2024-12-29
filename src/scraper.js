@@ -1,6 +1,6 @@
 const puppeteer = require('puppeteer');
 const ProgressTracker = require('./progressTracker');
-const { sleep, randomSleep, saveToFile, processTitle, standardizeKeywords } = require('./utils');
+const { sleep, randomSleep, saveToFile } = require('./utils');
 const { FUND_TYPES, loadSubCodes } = require('./config');
 
 // 添加一个通用的重试函数
@@ -571,7 +571,23 @@ async function runSearchByYear(page, year, options) {
     }, { timeout: 15000 });
 
     // 遍历每个主类和子类
+    let shouldStart = false; // 添加标志
     for (const [mainCode, { mainName, subCodes }] of subCodesMap) {
+        // 如果有上次的进度，检查是否应该开始处理
+        if (tracker.progress.lastSubCode) {
+            const lastDepartment = tracker.progress.lastSubCode[0]; // 获取部门代码 ('C' 或 'H')
+            const currentDepartment = mainCode[0];
+            
+            if (!shouldStart) {
+                // 如果当前部门在上次处理的部门之前，跳过
+                if (currentDepartment < lastDepartment) {
+                    console.log(`跳过部门 ${currentDepartment} 的主类 ${mainCode} (${mainName})...`);
+                    continue;
+                }
+                shouldStart = true;
+            }
+        }
+
         console.log(`\n开始处理主类 ${mainCode} (${mainName})...`);
 
         for (const { code: subCode, name: subName } of subCodes) {
@@ -615,6 +631,9 @@ async function runSearchByYear(page, year, options) {
                     await randomSleep(1000, 2000);
                 } catch (error) {
                     console.error(`[${year}] ${fundType}-${subCode} 处理失败:`, error);
+                    // 添加错误记录
+                    await tracker.markError(subCode, fundType);
+                    
                     if (error.message.includes('net::') || error.message.includes('proxy')) {
                         if (onProxyError) {
                             page = await onProxyError();

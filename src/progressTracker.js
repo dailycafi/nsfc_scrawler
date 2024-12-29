@@ -10,7 +10,8 @@ class ProgressTracker {
             mainCodeMap: {},
             lastSubCode: null,
             lastFundType: null,
-            totalRecords: 0
+            totalRecords: 0,
+            errorPoints: new Set()
         };
     }
 
@@ -92,18 +93,34 @@ class ProgressTracker {
         return this.progress.totalRecords || 0;
     }
 
+    async markError(subCode, fundType) {
+        if (!this.progress.errorPoints) {
+            this.progress.errorPoints = [];
+        }
+        
+        const errorPoint = `${subCode}-${fundType}`;
+        if (!this.progress.errorPoints.includes(errorPoint)) {
+            this.progress.errorPoints.push(errorPoint);
+        }
+        
+        await this.save();
+    }
+
     printProgress() {
         console.log(`年份: ${this.year}`);
         console.log(`最后处理的子代码: ${this.progress.lastSubCode || '无'}`);
         console.log(`最后处理的基金类型: ${this.progress.lastFundType || '无'}`);
         console.log(`总记录数: ${this.getTotalRecords()}`);
         
-        // 打印已完成的主代码和子代码统计
         for (const [mainCode, data] of Object.entries(this.progress.mainCodeMap)) {
             const doneSubCodes = Object.entries(data.subCodes)
                 .filter(([_, info]) => info.isDone)
                 .length;
             console.log(`${mainCode}: ${doneSubCodes} 个子代码已完成`);
+        }
+
+        if (this.progress.errorPoints && this.progress.errorPoints.length > 0) {
+            console.log('\n出错点:', this.progress.errorPoints.join(', '));
         }
         console.log();
     }

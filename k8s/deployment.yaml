@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scraper-2023
+  labels:
+    app: scraper
+    year: "2023"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scraper
+      year: "2023"
+  template:
+    metadata:
+      labels:
+        app: scraper
+        year: "2023"
+    spec:
+      containers:
+      - name: scraper
+        image: registry.cn-hangzhou.aliyuncs.com/你的命名空间/scraper:latest
+        env:
+        - name: SEARCH_YEAR
+          value: "2023"
+        - name: NODE_ENV
+          value: "production"
+        - name: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+          value: "true"
+        - name: PUPPETEER_EXECUTABLE_PATH
+          value: "/usr/bin/chromium"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: scraper-data
+          mountPath: /app/data
+        securityContext:
+          privileged: false
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      volumes:
+      - name: scraper-data
+        persistentVolumeClaim:
+          claimName: scraper-pvc-2023
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scraper-pvc-2023
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi 
