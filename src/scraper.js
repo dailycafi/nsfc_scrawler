@@ -632,16 +632,15 @@ async function runSearchByYear(page, year, options) {
         return form && form.children.length > 0;
     }, { timeout: 15000 });
 
-    // 遍历每个主类和子类
-    let shouldStart = false; // 添加标志
+    let shouldResumeFromLastFundType = false;
+
     for (const [mainCode, { mainName, subCodes }] of subCodesMap) {
         // 如果有 lastSubCode，检查是否应该开始处理
         if (tracker.progress.lastSubCode) {
-            // 保持完整代码的比较，不要去掉字母前缀
             const lastSubCode = tracker.progress.lastSubCode;
             
-            // 如果所有当前子代码都小于等于 lastSubCode，跳过这个主类
-            if (subCodes.every(sc => sc.code <= lastSubCode)) {
+            // 如果所有当前子代码都小于最后处理的子代码，跳过这个主类
+            if (subCodes.every(sc => sc.code < lastSubCode)) {
                 console.log(`跳过已处理的主类 ${mainCode} (${mainName})...`);
                 continue;
             }
@@ -650,16 +649,33 @@ async function runSearchByYear(page, year, options) {
         console.log(`\n开始处理主类 ${mainCode} (${mainName})...`);
 
         for (const { code: subCode, name: subName } of subCodes) {
-            // 直接比较完整的代码字符串
-            if (tracker.progress.lastSubCode && subCode <= tracker.progress.lastSubCode) {
+            // 如果当前子代码小于最后处理的子代码，跳过
+            if (tracker.progress.lastSubCode && subCode < tracker.progress.lastSubCode) {
                 console.log(`[${year}] 跳过已处理的子代码 ${subCode} (${subName})`);
                 continue;
             }
+
+            // 如果是最后处理的子代码，需要从上次的基金类型之后继续
+            shouldResumeFromLastFundType = (subCode === tracker.progress.lastSubCode);
 
             console.log(`\n处理子类 ${subCode} (${subName})...`);
             let totalCount = 0;
 
             for (const fundType of FUND_TYPES) {
+                // 如果是需要恢复的子代码，需要正确处理基金类型
+                if (shouldResumeFromLastFundType) {
+                    const lastFundTypeIndex = FUND_TYPES.indexOf(tracker.progress.lastFundType);
+                    const currentFundTypeIndex = FUND_TYPES.indexOf(fundType);
+                    
+                    if (currentFundTypeIndex <= lastFundTypeIndex) {
+                        console.log(`[${year}] 跳过已处理的基金类型: ${subCode}-${fundType}`);
+                        continue;
+                    }
+                    // 找到了第一个需要处理的基金类型，重置标志
+                    shouldResumeFromLastFundType = false;
+                }
+
+                // 检查这个组合是否已完成
                 if (tracker.isCompleted(subCode, fundType)) {
                     console.log(`[${year}] 跳过已完成的组合: ${subCode}-${fundType}`);
                     continue;
@@ -791,7 +807,7 @@ async function main() {
     }
 
     const browser = await puppeteer.launch({
-        headless: false,
+        headless: "new",
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
