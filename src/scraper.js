@@ -140,7 +140,7 @@ async function getCodeInputValue(page) {
     });
 }
 
-// 修改 selectCode 函数，添加验证逻辑
+// 修改 selectCode 函数，添加代码匹配验证
 async function selectCode(page, code) {
     try {
         // 等待元素可见
@@ -186,13 +186,15 @@ async function selectCode(page, code) {
         const afterValue = await getCodeInputValue(page);
         console.log(`选择代码后输入框的值: "${afterValue}"`);
 
-        // 验证是否选择成功
-        if (!afterValue || !afterValue.includes(code)) {
-            console.log(`代码选择可能未成功，期望包含 ${code}，实际值为 ${afterValue}`);
-            return false;
+        // 验证代码匹配
+        if (afterValue) {
+            const selectedCode = afterValue.split(' ')[0]; // 获取空格前的代码部分
+            const isMatched = selectedCode === code;
+            console.log(`代码匹配验证: 期望=${code}, 实际=${selectedCode}, 匹配结果=${isMatched}`);
+            return isMatched;
         }
 
-        return true;
+        return false;
     } catch (error) {
         console.error(`选择代码 ${code} 时出错:`, error);
         return false;
