@@ -1,6 +1,6 @@
 const puppeteer = require('puppeteer');
 const ProgressTracker = require('./progressTracker');
-const { sleep, randomSleep, saveToFile } = require('./utils');
+const { sleep, randomSleep, saveToFile, generateRandomUA } = require('./utils');
 const { FUND_TYPES, loadSubCodes } = require('./config');
 
 // 添加一个通用的重试函数
@@ -191,7 +191,26 @@ async function selectCode(page, code) {
             const selectedCode = afterValue.split(' ')[0]; // 获取空格前的代码部分
             const isMatched = selectedCode === code;
             console.log(`代码匹配验证: 期望=${code}, 实际=${selectedCode}, 匹配结果=${isMatched}`);
-            return isMatched;
+            
+            if (!isMatched) {
+                console.log('代码不匹配，准备重试...');
+                // 重新点击输入框，关闭当前树
+                await page.evaluate(() => {
+                    const labels = Array.from(document.querySelectorAll('.el-form-item__label'));
+                    const codeLabel = labels.find(label => label.textContent.trim() === '申请代码：');
+                    if (!codeLabel) return;
+                    const formItem = codeLabel.closest('.el-form-item');
+                    if (!formItem) return;
+                    const input = formItem.querySelector('input.el-input__inner');
+                    if (!input) return;
+                    input.click();
+                    input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                });
+                await randomSleep(500, 800);
+                return false;
+            }
+            
+            return true;
         }
 
         return false;
@@ -518,29 +537,54 @@ async function runSearch(page, { year, fundType, code }) {
             // 3. 选择资助类别
             await selectFundType(page, fundType);
 
-            // 4. 处理申请代码
-            await openCodeTree(page);
+            // 4. 处理代码选择
+            let codeSelected = false;
+            while (!codeSelected && attempt <= maxRetries) {
+                // 4.1 打开代码树
+                const treeOpened = await openCodeTree(page);
+                if (!treeOpened) {
+                    console.log('打开代码树失败，重试中...');
+                    continue;
+                }
 
-            // 5. 展开并选择代码
-            await expandDivision(page, code.startsWith('C') ? 'C 生命科学部' : 'H 医学科学部');
-            await randomSleep(200, 300);
-            
-            await expandMainCategory(page, code.slice(0, 3));
-            await randomSleep(200, 300);
-            
-            await selectCode(page, code);
-            await randomSleep(200, 300);
+                // 4.2 展开必要的节点
+                const divisionExpanded = await expandDivision(page, 
+                    code.startsWith('C') ? 'C 生命科学部' : 'H 医学科学部');
+                if (!divisionExpanded) {
+                    console.log('展开学部失败，重试中...');
+                    continue;
+                }
+                await randomSleep(200, 300);
 
-            // 6. 点击搜索并等待结果
+                const mainExpanded = await expandMainCategory(page, code.slice(0, 3));
+                if (!mainExpanded) {
+                    console.log('展开主类失败，重试中...');
+                    continue;
+                }
+                await randomSleep(200, 300);
+
+                // 4.3 选择具体代码
+                codeSelected = await selectCode(page, code);
+                if (!codeSelected) {
+                    console.log('代码选择失败，准备重试...');
+                    await randomSleep(500, 1000);
+                }
+            }
+
+            if (!codeSelected) {
+                throw new Error('代码选择失败，已达到最大重试次数');
+            }
+
+            // 5. 点击搜索并等待结果
             const searchResult = await clickSearchAndWait(page);
             if (!searchResult.hasResults) {
                 return { results: [], count: 0 };
             }
 
-            // 7. 处理搜索结果
+            // 6. 处理搜索结果
             const { results: pageResults, count } = await processSearchResults(page, { year, fundType, code });
             
-            // 8. 保存数据
+            // 7. 保存数据
             if (pageResults && pageResults.length > 0) {
                 await saveToFile(pageResults, year, code);
             }
@@ -574,6 +618,7 @@ async function runSearchByYear(page, year, options) {
     const subCodesMap = await loadSubCodes();
 
     // 首次打开页面
+    await page.setUserAgent(generateRandomUA());
     await page.goto('https://kd.nsfc.cn/finalProjectInit?advanced=true', {
         waitUntil: 'networkidle2',
         timeout: 30000
@@ -637,6 +682,7 @@ async function runSearchByYear(page, year, options) {
                         fundType === FUND_TYPES[FUND_TYPES.length - 1];
 
                     if (!isLastSearch) {
+                        await page.setUserAgent(generateRandomUA());
                         await page.goto('https://kd.nsfc.cn/finalProjectInit?advanced=true', {
                             waitUntil: 'networkidle2',
                             timeout: 30000
@@ -704,13 +750,12 @@ async function waitForPageLoad(page, timeout = 30000) {
     }
 }
 
-// 添加新的辅助函数
+// 修改 setupPage 函数
 async function setupPage(browser) {
     const page = await browser.newPage();
     
-    // 设置自定义 user agent
-    const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36';
-    await page.setUserAgent(customUA);
+    // 使用随机 User Agent
+    await page.setUserAgent(generateRandomUA());
     
     // 设置请求拦截
     await page.setRequestInterception(true);
@@ -746,7 +791,7 @@ async function main() {
     }
 
     const browser = await puppeteer.launch({
-        headless: "new",
+        headless: false,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
