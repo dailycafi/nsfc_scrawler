@@ -90,6 +90,10 @@ async function expandDivision(page, divisionTitle) {
                 await node.evaluate(el =>
                     el.parentElement.previousElementSibling.click());
                 await sleep(300);
+                
+                // 检查展开后的状态
+                const newExpanded = await isNodeExpanded(node);
+                console.log(`学部 ${divisionTitle} 展开操作后状态: ${newExpanded ? '已展开' : '未展开'}`);
             }
             return true;
         }
@@ -111,6 +115,10 @@ async function expandMainCategory(page, mainCode) {
                 await node.evaluate(el =>
                     el.parentElement.previousElementSibling.click());
                 await randomSleep(200,300);
+                
+                // 检查展开后的状态
+                const newExpanded = await isNodeExpanded(node);
+                console.log(`主类 ${mainCode} 展开操作后状态: ${newExpanded ? '已展开' : '未展开'}`);
             }
             return true;
         }
@@ -118,7 +126,21 @@ async function expandMainCategory(page, mainCode) {
     return false;
 }
 
-// 修改选择具体代码的部分
+// 新增：获取申请代码输入框的值
+async function getCodeInputValue(page) {
+    return await page.evaluate(() => {
+        const labels = Array.from(document.querySelectorAll('.el-form-item__label'));
+        const codeLabel = labels.find(label => label.textContent.trim() === '申请代码：');
+        if (!codeLabel) return null;
+        const formItem = codeLabel.closest('.el-form-item');
+        if (!formItem) return null;
+        const input = formItem.querySelector('input.el-input__inner');
+        if (!input) return null;
+        return input.value;
+    });
+}
+
+// 修改 selectCode 函数，添加验证逻辑
 async function selectCode(page, code) {
     try {
         // 等待元素可见
@@ -128,21 +150,23 @@ async function selectCode(page, code) {
                 node.textContent.trim().startsWith(targetCode));
         }, { timeout: 5000 }, code);
 
-        // 使用evaluate来确保在页面上下文中执行点击
+        // 获取点击前的值
+        const beforeValue = await getCodeInputValue(page);
+        console.log(`选择代码前输入框的值: "${beforeValue}"`);
+
+        // 点击代码
         const clicked = await page.evaluate((targetCode) => {
             const nodes = document.querySelectorAll('.ant-tree-title');
             for (const node of nodes) {
                 if (node.textContent.trim().startsWith(targetCode)) {
                     const wrapper = node.closest('.ant-tree-node-content-wrapper');
                     if (wrapper) {
-                        // 创建并触发点击事件
-                        const clickEvent = new MouseEvent('click', {
+                        wrapper.dispatchEvent(new MouseEvent('click', {
                             view: window,
                             bubbles: true,
                             cancelable: true,
                             buttons: 1
-                        });
-                        wrapper.dispatchEvent(clickEvent);
+                        }));
                         return true;
                     }
                 }
@@ -152,6 +176,19 @@ async function selectCode(page, code) {
 
         if (!clicked) {
             console.log(`未能点击代码: ${code}`);
+            return false;
+        }
+
+        // 等待值更新
+        await randomSleep(300, 500);
+        
+        // 验证点击后的值
+        const afterValue = await getCodeInputValue(page);
+        console.log(`选择代码后输入框的值: "${afterValue}"`);
+
+        // 验证是否选择成功
+        if (!afterValue || !afterValue.includes(code)) {
+            console.log(`代码选择可能未成功，期望包含 ${code}，实际值为 ${afterValue}`);
             return false;
         }
 
