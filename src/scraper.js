@@ -162,395 +162,351 @@ async function selectCode(page, code) {
     }
 }
 
-// 2) 通用搜索函数
+// 1. 处理搜索面板加载
+async function waitForSearchPanel(page) {
+    console.log(`等待高级搜索面板...`);
+    await page.waitForFunction(() => {
+        const panel = document.querySelector('.el-collapse-item.is-active');
+        if (!panel) return false;
+
+        const form = panel.querySelector('.el-form');
+        if (!form) return false;
+
+        const yearInput = form.querySelector('label[for="conclusionYear"]');
+        const typeInput = form.querySelector('label[for="projectType"]');
+        const codeInput = form.querySelector('label[for="code"]');
+
+        return yearInput && typeInput && codeInput;
+    }, {
+        timeout: 15000,
+        polling: 1000
+    });
+    await randomSleep(300, 500);
+}
+
+// 2. 处理年份选择
+async function selectYear(page, year) {
+    try {
+        const yearInputSelector = '.el-form-item__content .el-date-editor--year .el-input__inner';
+        await page.waitForSelector(yearInputSelector, { visible: true });
+        await page.click(yearInputSelector);
+        await randomSleep(300, 500);
+
+        const yearPanelSelector = '.el-year-table';
+        await page.waitForSelector(yearPanelSelector, { visible: true, timeout: 15000 });
+
+        let foundYear = false;
+        while (!foundYear) {
+            foundYear = await page.evaluate((targetYear) => {
+                const yearCells = Array.from(document.querySelectorAll('.el-year-table .cell'));
+                return yearCells.some(cell => cell.textContent.trim() === String(targetYear));
+            }, year);
+
+            if (!foundYear) {
+                await page.click('.el-date-picker__prev-btn.el-icon-d-arrow-left');
+                await randomSleep(200, 300);
+            }
+        }
+
+        await page.evaluate((targetYear) => {
+            const yearCells = Array.from(document.querySelectorAll('.el-year-table .cell'));
+            for (const cell of yearCells) {
+                if (cell.textContent.trim() === String(targetYear)) {
+                    cell.click();
+                    return true;
+                }
+            }
+            return false;
+        }, year);
+
+        await randomSleep(300, 500);
+    } catch (err) {
+        console.error(`选择年度时出错:`, err);
+        throw err;
+    }
+}
+
+// 3. 处理申请代码树的显示
+async function openCodeTree(page) {
+    console.log('准备点击申请代码输入框...');
+    
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            console.log(`第 ${attempt} 次尝试...`);
+            
+            await page.waitForFunction(() => {
+                if (document.readyState !== 'complete') return false;
+                const masks = document.querySelectorAll('.el-loading-mask');
+                if (Array.from(masks).some(mask =>
+                    mask.style.display !== 'none' && getComputedStyle(mask).display !== 'none'
+                )) return false;
+                const form = document.querySelector('.el-form');
+                if (!form) return false;
+                const labels = Array.from(document.querySelectorAll('.el-form-item__label'));
+                const codeLabel = labels.find(label => label.textContent.trim() === '申请代码：');
+                if (!codeLabel) return false;
+                const formItem = codeLabel.closest('.el-form-item');
+                if (!formItem) return false;
+                const input = formItem.querySelector('input.el-input__inner');
+                if (!input) return false;
+                const rect = input.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }, { timeout: 5000 });
+
+            console.log('页面已就绪');
+            await randomSleep(500, 800);
+
+            const clicked = await page.evaluate(() => {
+                const labels = Array.from(document.querySelectorAll('.el-form-item__label'));
+                const codeLabel = labels.find(label => label.textContent.trim() === '申请代码：');
+                if (!codeLabel) return false;
+                const formItem = codeLabel.closest('.el-form-item');
+                if (!formItem) return false;
+                const input = formItem.querySelector('input.el-input__inner');
+                if (!input) return false;
+                input.click();
+                input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                input.focus();
+                return true;
+            });
+
+            if (!clicked) {
+                throw new Error('未找到可点击的输入框');
+            }
+
+            await randomSleep(500, 800);
+
+            const treeVisible = await page.evaluate(() => {
+                const tree = document.querySelector('.ant-tree');
+                return !!tree && tree.children.length > 0;
+            });
+
+            if (treeVisible) {
+                console.log('成功点击并确认树结构已出现');
+                return true;
+            }
+
+            console.log('点击成功但树结构未出现，将重试...');
+        } catch (err) {
+            console.log(`第 ${attempt} 次尝试失败:`, err.message);
+            if (attempt < 3) {
+                await sleep(800 * attempt);
+            }
+        }
+    }
+    
+    throw new Error('无法打开申请代码选择树');
+}
+
+// 4. 点击搜索按钮并等待结果
+async function clickSearchAndWait(page) {
+    const searchButton = await page.$('button.el-button.SolidBtn span');
+    if (!searchButton) {
+        const buttons = await page.$$('button.el-button span');
+        let found = false;
+        for (const button of buttons) {
+            const text = await button.evaluate(el => el.textContent.trim());
+            if (text === '检索') {
+                await button.click();
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw new Error('未找到检索按钮');
+        }
+    } else {
+        await searchButton.click();
+    }
+    console.log('已点击检索按钮');
+
+    const { hasResults, totalItems } = await waitForPageLoad(page);
+    if (!hasResults) {
+        return { hasResults: false, totalItems: 0 };
+    }
+
+    console.log(`找到 ${totalItems} 条结果`);
+    await sleep(2000);
+    return { hasResults: true, totalItems };
+}
+
+// 5. 处理搜索结果的获取和解析
+async function processSearchResults(page, { year, fundType, code }) {
+    let allResults = [];
+    let currentPage = 1;
+    
+    const totals = await page.evaluate(() => {
+        const totalSpan = document.querySelector('span[style="font-size: 16px;"]');
+        const totalText = totalSpan?.textContent?.match(/\d+/)?.[0] || '0';
+
+        const paginationTotal = document.querySelector('.el-pagination__total');
+        const pagesMatch = paginationTotal?.textContent?.match(/共(\d+)页/);
+        const totalPages = pagesMatch ? parseInt(pagesMatch[1]) : 1;
+
+        return {
+            items: parseInt(totalText),
+            pages: totalPages
+        };
+    });
+
+    const totalItems = totals.items;
+    const totalPages = totals.pages;
+    console.log(`找到总共 ${totalItems} 条结果，共 ${totalPages} 页`);
+
+    while (currentPage <= totalPages) {
+        console.log(`正在处理第 ${currentPage}/${totalPages} 页...`);
+
+        const pageResults = await page.evaluate(({ year, fundType, code }) => {
+            const items = Array.from(document.querySelectorAll('.info-warp'));
+            const processedApproves = new Set();
+
+            function processTitle(title) {
+                const match = title.match(/^(\d+)\.(.+)$/);
+                if (match) {
+                    return {
+                        number: match[1],
+                        title: match[2].trim()
+                    };
+                }
+                return {
+                    number: '',
+                    title: title.trim()
+                };
+            }
+
+            function standardizeKeywords(keywords) {
+                if (!keywords) return '';
+                keywords = keywords.replace(/^关键词：/, '');
+                return keywords
+                    .split(/[；;、。.．]+/)
+                    .map(k => k.trim())
+                    .filter(k => k)
+                    .join('; ');
+            }
+
+            return items.map(item => {
+                try {
+                    const rawTitle = item.querySelector('.el-row:nth-child(1) a')?.textContent?.trim() || '';
+                    const { number: id, title } = processTitle(rawTitle);
+
+                    const row2 = item.querySelector('.el-row:nth-child(2)');
+                    const approveText = row2?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('批准号：', '')?.trim() || '';
+                    const codeText = row2?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('申请代码：', '')?.trim() || '';
+                    const fundTypeText = row2?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('项目类别：', '')?.trim() || '';
+                    const personText = row2?.querySelector('.el-col:nth-child(4)')?.textContent?.replace('项目负责人：', '')?.trim() || '';
+
+                    const row3 = item.querySelector('.el-row:nth-child(3)');
+                    const moneyText = row3?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('资助经费：', '').replace('（万元）', '')?.trim() || '';
+                    const money = moneyText ? parseFloat(moneyText) : 0;
+                    const approveYear = row3?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('批准年度：', '')?.trim() || '';
+                    const endYear = row3?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('结题年度：', '')?.trim() || '';
+                    const organization = row3?.querySelector('.el-col:nth-child(4) a')?.textContent?.trim() || '';
+
+                    const row4 = item.querySelector('.el-row:nth-child(4)');
+                    const rawKeywords = row4?.querySelector('.el-col')?.textContent?.replace('关键词：', '')?.trim() || '';
+                    const keywords = standardizeKeywords(rawKeywords);
+
+                    if (!approveText || !title) return null;
+                    if (processedApproves.has(approveText)) return null;
+                    processedApproves.add(approveText);
+
+                    return {
+                        searchYear: year,
+                        searchFund: fundType,
+                        searchCode: code,
+                        id,
+                        title,
+                        approveText,
+                        codeText,
+                        fundTypeText,
+                        personText,
+                        money,
+                        approveYear,
+                        endYear,
+                        organization,
+                        keywords
+                    };
+                } catch (err) {
+                    console.error('解析单个项目时出错:', err);
+                    return null;
+                }
+            }).filter(Boolean);
+        }, { year, fundType, code });
+
+        allResults = allResults.concat(pageResults);
+        console.log(`第 ${currentPage} 页抓取到 ${pageResults.length} 条数据`);
+
+        if (currentPage < totalPages) {
+            const nextButton = await page.$('button.btn-next');
+            if (!nextButton) {
+                throw new Error('未找到下一页按钮');
+            }
+            await nextButton.click();
+            await sleep(2000);
+
+            await page.waitForFunction(() => {
+                const masks = document.querySelectorAll('.el-loading-mask');
+                return Array.from(masks).every(mask =>
+                    mask.style.display === 'none' || getComputedStyle(mask).display === 'none'
+                );
+            }, { timeout: 30000 });
+        }
+
+        currentPage++;
+    }
+
+    return {
+        results: allResults,
+        count: allResults.length
+    };
+}
+
+// 修改后的主搜索函数
 async function runSearch(page, { year, fundType, code }) {
     let results = [];
-    let treeVisible = false;
     const maxRetries = 3;
 
     console.log(`--> runSearch 开始: year=${year}, fundType=${fundType}, code=${code}`);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            // 等待高级搜索面板加载完成
-            console.log(`[${year}] 等待高级搜索面板...`);
-            await page.waitForFunction(() => {
-                // 检查面板和表单是否都已加载
-                const panel = document.querySelector('.el-collapse-item.is-active');
-                if (!panel) return false;
+            // 1. 等待搜索面板加载
+            await waitForSearchPanel(page);
 
-                const form = panel.querySelector('.el-form');
-                if (!form) return false;
+            // 2. 选择结题年度
+            await selectYear(page, year);
 
-                // 确保关键输入框都已加载
-                const yearInput = form.querySelector('label[for="conclusionYear"]');
-                const typeInput = form.querySelector('label[for="projectType"]');
-                const codeInput = form.querySelector('label[for="code"]');
-
-                return yearInput && typeInput && codeInput;
-            }, {
-                timeout: 15000,
-                polling: 1000  // 每秒检查一次
-            });
-
-            await randomSleep(300,500);  // 给页面一些稳定时间
-
-            // (B) 选择结题年度
-            try {
-                const yearInputSelector = '.el-form-item__content .el-date-editor--year .el-input__inner';
-                await page.waitForSelector(yearInputSelector, { visible: true });
-                await page.click(yearInputSelector);
-                await randomSleep(300,500);
-
-                // 等待年份面板出现
-                const yearPanelSelector = '.el-year-table';
-                await page.waitForSelector(yearPanelSelector, { visible: true, timeout: 15000 });
-
-                // 获取当前年份区间
-                let foundYear = false;
-                while (!foundYear) {
-                    foundYear = await page.evaluate((targetYear) => {
-                        const yearCells = Array.from(document.querySelectorAll('.el-year-table .cell'));
-                        return yearCells.some(cell => cell.textContent.trim() === String(targetYear));
-                    }, year);
-
-                    if (!foundYear) {
-                        await page.click('.el-date-picker__prev-btn.el-icon-d-arrow-left');
-                        await randomSleep(200,300);
-                    }
-                }
-
-                // 选择目标年份
-                await page.evaluate((targetYear) => {
-                    const yearCells = Array.from(document.querySelectorAll('.el-year-table .cell'));
-                    for (const cell of yearCells) {
-                        if (cell.textContent.trim() === String(targetYear)) {
-                            cell.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }, year);
-
-                await randomSleep(300,500);
-            } catch (err) {
-                console.error(`选择年度 ${year} 时出错:`, err);
-            }
-
-            // 选择资助类别
+            // 3. 选择资助类别
             await selectFundType(page, fundType);
 
-            // (D) 申请代码处理
-            console.log('准备击申请代码输入框...');
+            // 4. 处理申请代码
+            await openCodeTree(page);
 
-            treeVisible = false;
-            for (let attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    console.log(`第 ${attempt} 次尝试...`);
+            // 5. 展开并选择代码
+            await expandDivision(page, code.startsWith('C') ? 'C 生命科学部' : 'H 医学科学部');
+            await randomSleep(200, 300);
+            
+            await expandMainCategory(page, code.slice(0, 3));
+            await randomSleep(200, 300);
+            
+            await selectCode(page, code);
+            await randomSleep(200, 300);
 
-                    // 1. 等待页面完全加载
-                    await page.waitForFunction(() => {
-                        if (document.readyState !== 'complete') return false;
-                        const masks = document.querySelectorAll('.el-loading-mask');
-                        if (Array.from(masks).some(mask =>
-                            mask.style.display !== 'none' && getComputedStyle(mask).display !== 'none'
-                        )) return false;
-                        const form = document.querySelector('.el-form');
-                        if (!form) return false;
-                        const labels = Array.from(document.querySelectorAll('.el-form-item__label'));
-                        const codeLabel = labels.find(label => label.textContent.trim() === '申请代码：');
-                        if (!codeLabel) return false;
-                        const formItem = codeLabel.closest('.el-form-item');
-                        if (!formItem) return false;
-                        const input = formItem.querySelector('input.el-input__inner');
-                        if (!input) return false;
-                        const rect = input.getBoundingClientRect();
-                        return rect.width > 0 && rect.height > 0;
-                    }, { timeout: 5000 });
-
-                    console.log('页面已备就绪');
-                    await randomSleep(500, 800);
-
-                    // 2. 尝试点击
-                    const clicked = await page.evaluate(() => {
-                        const labels = Array.from(document.querySelectorAll('.el-form-item__label'));
-                        const codeLabel = labels.find(label => label.textContent.trim() === '申请代码：');
-                        if (!codeLabel) return false;
-                        const formItem = codeLabel.closest('.el-form-item');
-                        if (!formItem) return false;
-                        const input = formItem.querySelector('input.el-input__inner');
-                        if (!input) return false;
-                        input.click();
-                        input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                        input.focus();
-                        return true;
-                    });
-
-                    if (!clicked) {
-                        throw new Error('未找到可点击的输入框');
-                    }
-
-                    await randomSleep(500, 800);
-
-                    // 3. 检查树是否出现
-                    treeVisible = await page.evaluate(() => {
-                        const tree = document.querySelector('.ant-tree');
-                        return !!tree && tree.children.length > 0;
-                    });
-
-                    if (treeVisible) {
-                        console.log('成功点击并确认树结构已出现');
-                        break;
-                    }
-
-                    console.log('点击成功打开树结构，将重试...');
-
-                } catch (err) {
-                    console.log(`第 ${attempt} 次尝试失败:`, err.message);
-                    if (attempt < 3) {
-                        console.log(`等待后重试...`);
-                        await sleep(800 * attempt);
-                    }
-                }
+            // 6. 点击搜索并等待结果
+            const searchResult = await clickSearchAndWait(page);
+            if (!searchResult.hasResults) {
+                return { results: [], count: 0 };
             }
 
-            if (!treeVisible) {
-                throw new Error('无法打开申请代码选择树');
+            // 7. 处理搜索结果
+            const { results: pageResults, count } = await processSearchResults(page, { year, fundType, code });
+            
+            // 8. 保存数据
+            if (pageResults && pageResults.length > 0) {
+                await saveToFile(pageResults, year, code);
             }
 
-            // (E) 展开部门并选择代码
-            try {
-                // 1. 展开学部
-                const divisionTitle = code.startsWith('C') ? 'C 生命科学部' : 'H 医学科学部';
-                const divisionExpanded = await expandDivision(page, divisionTitle);
-                if (!divisionExpanded) {
-                    throw new Error(`未找到学部: ${divisionTitle}`);
-                }
-                await randomSleep(200,300);
-
-                // 2. 展开主类
-                const mainCode = code.slice(0, 3);  // 如 "C01" 或 "H01"
-                const mainExpanded = await expandMainCategory(page, mainCode);
-                if (!mainExpanded) {
-                    throw new Error(`未找到主类: ${mainCode}`);
-                }
-                await randomSleep(200,300);
-
-                // 3. 选择具体代码
-                const codeSelected = await selectCode(page, code);
-                if (!codeSelected) {
-                    throw new Error(`未找到代码: ${code}`);
-                }
-                await randomSleep(200,300);
-
-            } catch (err) {
-                console.error('选择申请代码时出错:', err);
-                throw err;
-            }
-
-            // (F) 点击搜索按钮
-            try {
-                // 点击搜索按钮
-                const searchButton = await page.$('button.el-button.SolidBtn span');
-                if (!searchButton) {
-                    // 备用选择器：通过文本内容找
-                    const buttons = await page.$$('button.el-button span');
-                    let found = false;
-                    for (const button of buttons) {
-                        const text = await button.evaluate(el => el.textContent.trim());
-                        if (text === '检索') {
-                            await button.click();
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        throw new Error('未找到检索按钮');
-                    }
-                } else {
-                    await searchButton.click();
-                }
-                console.log('已点击检索按钮');
-
-                // 点击搜索按钮后检查
-                const { hasResults, totalItems } = await waitForPageLoad(page);
-
-                if (!hasResults) {
-                    console.log(`[${year}] ${code} - ${fundType}: 无搜索结果`);
-                    return { results: [], count: 0 };
-                }
-
-                console.log(`找到 ${totalItems} 条结果`);
-                await sleep(2000);  // 给一些额外的加载时间
-
-            } catch (err) {
-                console.error('点击检索按钮或等待结果时出错:', err);
-                throw err;
-            }
-
-            // (G) 抓取数据
-            try {
-                let allResults = [];
-                let currentPage = 1;
-                let totalPages = 1;
-                let totalItems = 0;
-
-                // 首先获取总数和总页数
-                const totals = await page.evaluate(() => {
-                    const totalSpan = document.querySelector('span[style="font-size: 16px;"]');
-                    const totalText = totalSpan?.textContent?.match(/\d+/)?.[0] || '0';
-
-                    const paginationTotal = document.querySelector('.el-pagination__total');
-                    const pagesMatch = paginationTotal?.textContent?.match(/共(\d+)页/);
-                    const totalPages = pagesMatch ? parseInt(pagesMatch[1]) : 1;
-
-                    return {
-                        items: parseInt(totalText),
-                        pages: totalPages
-                    };
-                });
-
-                totalItems = totals.items;
-                totalPages = totals.pages;
-                console.log(`找到总共 ${totalItems} 条结果，共 ${totalPages} 页`);
-
-                // 循环处理每一页
-                while (currentPage <= totalPages) {
-                    console.log(`正在处理第 ${currentPage}/${totalPages} 页...`);
-
-                    // 获取当前页的数据
-                    const pageResults = await page.evaluate(({ year, fundType, code, processTitle, standardizeKeywords }) => {
-                        const items = Array.from(document.querySelectorAll('.info-warp'));
-                        const processedApproves = new Set();
-
-                        // 在浏览器环境中定义这些函数
-                        function processTitle(title) {
-                            const match = title.match(/^(\d+)\.(.+)$/);
-                            if (match) {
-                                return {
-                                    number: match[1],
-                                    title: match[2].trim()
-                                };
-                            }
-                            return {
-                                number: '',
-                                title: title.trim()
-                            };
-                        }
-
-                        function standardizeKeywords(keywords) {
-                            if (!keywords) return '';
-                            keywords = keywords.replace(/^关键词：/, '');
-                            return keywords
-                                .split(/[；;、。.．]+/)
-                                .map(k => k.trim())
-                                .filter(k => k)
-                                .join('; ');
-                        }
-
-                        return items.map(item => {
-                            try {
-                                // 获取并处理标题
-                                const rawTitle = item.querySelector('.el-row:nth-child(1) a')?.textContent?.trim() || '';
-                                const { number: id, title } = processTitle(rawTitle);
-
-                                // 获取第二行数据
-                                const row2 = item.querySelector('.el-row:nth-child(2)');
-                                const approveText = row2?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('批准号：', '')?.trim() || '';
-                                const codeText = row2?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('申请代码：', '')?.trim() || '';
-                                const fundTypeText = row2?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('项目类别：', '')?.trim() || '';
-                                const personText = row2?.querySelector('.el-col:nth-child(4)')?.textContent?.replace('项目负责人：', '')?.trim() || '';
-
-                                // 获取第三行数据
-                                const row3 = item.querySelector('.el-row:nth-child(3)');
-                                const moneyText = row3?.querySelector('.el-col:nth-child(1)')?.textContent?.replace('资助经费：', '').replace('（万元）', '')?.trim() || '';
-                                const money = moneyText ? parseFloat(moneyText) : 0;
-                                const approveYear = row3?.querySelector('.el-col:nth-child(2)')?.textContent?.replace('批准年度：', '')?.trim() || '';
-                                const endYear = row3?.querySelector('.el-col:nth-child(3)')?.textContent?.replace('结题年度：', '')?.trim() || '';
-                                const organization = row3?.querySelector('.el-col:nth-child(4) a')?.textContent?.trim() || '';
-
-                                // 获取第四行数据（关键词）
-                                const row4 = item.querySelector('.el-row:nth-child(4)');
-                                const rawKeywords = row4?.querySelector('.el-col')?.textContent?.replace('关键词：', '')?.trim() || '';
-                                const keywords = standardizeKeywords(rawKeywords);
-
-                                if (!approveText || !title) return null;
-                                if (processedApproves.has(approveText)) return null;
-                                processedApproves.add(approveText);
-
-                                return {
-                                    searchYear: year,
-                                    searchFund: fundType,
-                                    searchCode: code,
-                                    id,
-                                    title,
-                                    approveText,
-                                    codeText,
-                                    fundTypeText,
-                                    personText,
-                                    money,
-                                    approveYear,
-                                    endYear,
-                                    organization,
-                                    keywords
-                                };
-                            } catch (err) {
-                                console.error('解析单个项目时出错:', err);
-                                return null;
-                            }
-                        }).filter(Boolean);
-                    }, { year, fundType, code });
-
-                    // 将当前页的结果添加到总结果中
-                    allResults = allResults.concat(pageResults);
-                    console.log(`第 ${currentPage} 页抓取到 ${pageResults.length} 条数据`);
-
-                    // 如果还有下一页，点击下一页按钮
-                    if (currentPage < totalPages) {
-                        const nextButton = await page.$('button.btn-next');
-                        if (!nextButton) {
-                            throw new Error('未找到下一页按钮');
-                        }
-                        await nextButton.click();
-                        await sleep(2000); // 等待页面加载
-
-                        // 等待加载完成
-                        await page.waitForFunction(() => {
-                            const masks = document.querySelectorAll('.el-loading-mask');
-                            return Array.from(masks).every(mask =>
-                                mask.style.display === 'none' || getComputedStyle(mask).display === 'none'
-                            );
-                        }, { timeout: 30000 });
-                    }
-
-                    currentPage++;
-                }
-
-                console.log(`成功抓取到总共 ${allResults.length} 条有效数据`);
-                if (allResults.length > 0) {
-                    console.log('第一条数据:', allResults[0]);
-                }
-
-                // 保存数据
-                if (allResults && allResults.length > 0) {
-                    await saveToFile(allResults, year, code);
-                }
-
-                if (allResults.length === 0) {
-                    console.log(`[${year}] ${code} - ${fundType}: 搜索完成但未找到任何结果`);
-                } else {
-                    console.log(`[${year}] ${code} - ${fundType}: 找到 ${allResults.length} 条结果`);
-                }
-
-                return {
-                    results: allResults,
-                    count: allResults.length
-                };
-
-            } catch (err) {
-                console.error('抓取数据时出错:', err);
-                throw err;
-            }
+            return { results: pageResults, count };
 
         } catch (error) {
             console.error(`第 ${attempt} 次尝试失败:`, error);
@@ -566,7 +522,6 @@ async function runSearch(page, { year, fundType, code }) {
         count: results.length
     };
 }
-
 
 // 添加新的年份处理函数
 async function runSearchByYear(page, year, options) {
