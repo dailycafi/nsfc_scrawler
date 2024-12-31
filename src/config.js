@@ -1,7 +1,3 @@
-const fs = require('fs').promises;
-const path = require('path');
-const csv = require('csv-parser');
-const { createReadStream } = require('fs');
 
 // 基金类型配置
 const FUND_TYPES = [
