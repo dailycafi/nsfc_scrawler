@@ -1,5 +1,7 @@
 const fs = require('fs').promises;
 const path = require('path');
+const csv = require('csv-parser');
+const { createReadStream } = require('fs');
 
 class ProgressTracker {
     constructor(year) {
@@ -13,6 +15,7 @@ class ProgressTracker {
             totalRecords: 0,
             errorPoints: new Set()
         };
+        this.subCodesMap = new Map();
     }
 
     async load() {
@@ -30,7 +33,7 @@ class ProgressTracker {
 
     async save() {
         await fs.writeFile(
-            this.progressFile, 
+            this.progressFile,
             JSON.stringify(this.progress, null, 2)
         );
         console.log(`[${this.year}] 进度已保存`);
@@ -44,17 +47,17 @@ class ProgressTracker {
         if (!this.progress.completed[subCode]) {
             this.progress.completed[subCode] = {};
         }
-        
+
         this.progress.completed[subCode][fundType] = {
             isDone: true,
             count: count,
             completedAt: new Date().toISOString()
         };
-        
+
         this.progress.lastSubCode = subCode;
         this.progress.lastFundType = fundType;
         this.progress.totalRecords += count;
-        
+
         await this.save();
     }
 
@@ -72,16 +75,23 @@ class ProgressTracker {
         if (!this.progress.mainCodeMap) {
             this.progress.mainCodeMap = {};
         }
+        
         if (!this.progress.mainCodeMap[mainCode]) {
-            this.progress.mainCodeMap[mainCode] = { subCodes: {} };
+            this.progress.mainCodeMap[mainCode] = {
+                subCodes: {}
+            };
         }
         
+        if (!this.progress.mainCodeMap[mainCode].subCodes) {
+            this.progress.mainCodeMap[mainCode].subCodes = {};
+        }
+
         this.progress.mainCodeMap[mainCode].subCodes[subCode] = {
             isDone: true,
             totalCount: totalCount,
             completedAt: new Date().toISOString()
         };
-        
+
         await this.save();
     }
 
@@ -97,12 +107,12 @@ class ProgressTracker {
         if (!this.progress.errorPoints) {
             this.progress.errorPoints = [];
         }
-        
+
         const errorPoint = `${subCode}-${fundType}`;
         if (!this.progress.errorPoints.includes(errorPoint)) {
             this.progress.errorPoints.push(errorPoint);
         }
-        
+
         await this.save();
     }
 
@@ -111,7 +121,7 @@ class ProgressTracker {
         console.log(`最后处理的子代码: ${this.progress.lastSubCode || '无'}`);
         console.log(`最后处理的基金类型: ${this.progress.lastFundType || '无'}`);
         console.log(`总记录数: ${this.getTotalRecords()}`);
-        
+
         for (const [mainCode, data] of Object.entries(this.progress.mainCodeMap)) {
             const doneSubCodes = Object.entries(data.subCodes)
                 .filter(([_, info]) => info.isDone)
@@ -124,8 +134,38 @@ class ProgressTracker {
         }
         console.log();
     }
+
+    /**
+     * 读取子类代码配置文件
+     * @returns {Promise<Map<string, {mainName: string, subCodes: Array<{code: string, name: string}>}>>}
+     */
+    async loadSubCodes() {
+        return new Promise((resolve, reject) => {
+            const results = [];
+            createReadStream(path.join(__dirname, '..', 'keywords', 'filtered_subcodes.csv'))
+                .pipe(csv())
+                .on('data', (data) => {
+                    results.push(data);
+                })
+                .on('end', () => {
+                    results.forEach(row => {
+                        const { mainCode, mainName, subCode, subName } = row;
+                        if (!this.subCodesMap.has(mainCode)) {
+                            this.subCodesMap.set(mainCode, {
+                                mainName,
+                                subCodes: []
+                            });
+                        }
+                        this.subCodesMap.get(mainCode).subCodes.push({
+                            code: subCode,
+                            name: subName
+                        });
+                    });
+                    resolve(this.subCodesMap);
+                })
+                .on('error', reject);
+        });
+    }
 }
 
 module.exports = ProgressTracker;
-  
-  

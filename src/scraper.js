@@ -1,7 +1,7 @@
 const puppeteer = require('puppeteer');
 const ProgressTracker = require('./progressTracker');
 const { sleep, randomSleep, saveToFile, generateRandomUA } = require('./utils');
-const { FUND_TYPES, loadSubCodes } = require('./config');
+const { FUND_TYPES } = require('./config');
 
 // 添加一个通用的重试函数
 async function retryOperation(operation, maxRetries = 3, description = '') {
@@ -615,7 +615,7 @@ async function runSearchByYear(page, year, options) {
     console.log(`[${year}] 开始处理年份数据`);
 
     // 加载子类代码配置
-    const subCodesMap = await loadSubCodes();
+    const subCodesMap = await tracker.loadSubCodes();
 
     // 首次打开页面
     await page.setUserAgent(generateRandomUA());
@@ -736,29 +736,40 @@ async function waitForPageLoad(page, timeout = 30000) {
             );
         }, { timeout: timeout });
 
-        // 2. 使用更精确的选择器检查"无结果"提示
+        // 2. 等待结果加载完成
+        await page.waitForFunction(() => {
+            // 检查是否有结果列表或无结果提示
+            const resultList = document.querySelector('.info-warp:not(.searchNull)');
+            const noResultDiv = document.querySelector('.info-warp.searchNull');
+            return resultList || noResultDiv;
+        }, { timeout: timeout });
+
+        // 3. 检查是否有结果
         const hasNoResults = await page.evaluate(() => {
-            // 使用更具体的选择器来匹配无结果提示的 div
             const noResultDiv = document.querySelector('.info-warp.searchNull');
             return !!noResultDiv;
         });
 
         if (hasNoResults) {
-            console.log('搜索结果为空');
+            console.log('搜索无结果');
             return { hasResults: false, totalItems: 0 };
         }
 
-        // 3. 如果有结果，获取总数
+        // 4. 获取结果总数
         const totalItems = await page.evaluate(() => {
             const totalSpan = document.querySelector('span[style="font-size: 16px;"]');
-            const totalText = totalSpan?.textContent?.match(/\d+/)?.[0];
+            if (!totalSpan) return 0;
+            const totalText = totalSpan.textContent.match(/\d+/)?.[0];
             return totalText ? parseInt(totalText) : 0;
         });
 
-        return {
-            hasResults: true,
-            totalItems
-        };
+        if (totalItems > 0) {
+            console.log(`搜索成功：找到 ${totalItems} 条结果`);
+            return { hasResults: true, totalItems };
+        } else {
+            console.log('搜索结果为空');
+            return { hasResults: false, totalItems: 0 };
+        }
 
     } catch (error) {
         console.error('等待页面加载超时:', error.message);
