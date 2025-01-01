@@ -10,6 +10,7 @@ class ProgressTracker {
         this.progress = {
             completed: {},
             mainCodeMap: {},
+            lastMainCode: null,
             lastSubCode: null,
             lastFundType: null,
             totalRecords: 0,
@@ -54,6 +55,8 @@ class ProgressTracker {
             completedAt: new Date().toISOString()
         };
 
+        const mainCode = subCode.slice(0, 3);
+        this.progress.lastMainCode = mainCode;
         this.progress.lastSubCode = subCode;
         this.progress.lastFundType = fundType;
         this.progress.totalRecords += count;
@@ -92,6 +95,9 @@ class ProgressTracker {
             completedAt: new Date().toISOString()
         };
 
+        this.progress.lastMainCode = mainCode;
+        this.progress.lastSubCode = subCode;
+
         await this.save();
     }
 
@@ -118,6 +124,7 @@ class ProgressTracker {
 
     printProgress() {
         console.log(`年份: ${this.year}`);
+        console.log(`最后处理的主代码: ${this.progress.lastMainCode || '无'}`);
         console.log(`最后处理的子代码: ${this.progress.lastSubCode || '无'}`);
         console.log(`最后处理的基金类型: ${this.progress.lastFundType || '无'}`);
         console.log(`总记录数: ${this.getTotalRecords()}`);

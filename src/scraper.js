@@ -632,9 +632,11 @@ async function runSearchByYear(page, year, options) {
         return form && form.children.length > 0;
     }, { timeout: 15000 });
 
-    let shouldResumeFromLastFundType = false;
-
     for (const [mainCode, { mainName, subCodes }] of subCodesMap) {
+        if (mainCode === 'C03') {
+            console.log('C03 子代码列表:', subCodes.map(sc => sc.code));
+            console.log('最后处理的子代码:', tracker.progress.lastSubCode);
+        }
         // 如果有 lastSubCode，检查是否应该开始处理
         if (tracker.progress.lastSubCode) {
             const lastSubCode = tracker.progress.lastSubCode;
@@ -655,15 +657,12 @@ async function runSearchByYear(page, year, options) {
                 continue;
             }
 
-            // 如果是最后处理的子代码，需要从上次的基金类型之后继续
-            shouldResumeFromLastFundType = (subCode === tracker.progress.lastSubCode);
-
             console.log(`\n处理子类 ${subCode} (${subName})...`);
             let totalCount = 0;
 
             for (const fundType of FUND_TYPES) {
-                // 如果是需要恢复的子代码，需要正确处理基金类型
-                if (shouldResumeFromLastFundType) {
+                // 对于最后处理的子代码，检查基金类型
+                if (subCode === tracker.progress.lastSubCode) {
                     const lastFundTypeIndex = FUND_TYPES.indexOf(tracker.progress.lastFundType);
                     const currentFundTypeIndex = FUND_TYPES.indexOf(fundType);
                     
@@ -671,8 +670,6 @@ async function runSearchByYear(page, year, options) {
                         console.log(`[${year}] 跳过已处理的基金类型: ${subCode}-${fundType}`);
                         continue;
                     }
-                    // 找到了第一个需要处理的基金类型，重置标志
-                    shouldResumeFromLastFundType = false;
                 }
 
                 // 检查这个组合是否已完成
