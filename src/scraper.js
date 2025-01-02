@@ -44,7 +44,7 @@ async function selectFundType(page, fundType) {
         const dropdownSelector = '.el-select-dropdown.theSelector';
         await page.waitForSelector(dropdownSelector, {
             visible: true,
-            timeout: 5000
+            timeout: 1000
         });
 
         // 5. 选择目标选项
@@ -148,7 +148,7 @@ async function selectCode(page, code) {
             const nodes = document.querySelectorAll('.ant-tree-title');
             return Array.from(nodes).some(node => 
                 node.textContent.trim().startsWith(targetCode));
-        }, { timeout: 5000 }, code);
+        }, { timeout: 1000 }, code);
 
         // 获取点击前的值
         const beforeValue = await getCodeInputValue(page);
@@ -206,7 +206,7 @@ async function selectCode(page, code) {
                     input.click();
                     input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
                 });
-                await randomSleep(500, 800);
+                await randomSleep(300, 500);
                 return false;
             }
             
@@ -309,10 +309,10 @@ async function openCodeTree(page) {
                 if (!input) return false;
                 const rect = input.getBoundingClientRect();
                 return rect.width > 0 && rect.height > 0;
-            }, { timeout: 5000 });
+            }, { timeout: 1000 });
 
             console.log('页面已就绪');
-            await randomSleep(500, 800);
+            await randomSleep(300, 500);
 
             const clicked = await page.evaluate(() => {
                 const labels = Array.from(document.querySelectorAll('.el-form-item__label'));

@@ -1,194 +1,199 @@
+const https = require('https');
 const puppeteer = require('puppeteer');
-const proxyChain = require('proxy-chain');
-const fs = require('fs').promises;
-const { sleep } = require('./utils');
+const zlib = require("zlib");
+const path = require('path');
 
-const username = 'feistar_OuMYd';
-const password = 'Cinbofei3loushab_';
+// 加载环境变量
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-async function launchBrowserWithProxy(proxyServer) {
-    const proxy = `http://customer-${username}:${password}@${proxyServer}`;
-    const anonymizedProxy = await proxyChain.anonymizeProxy(proxy);
-    const browser = await puppeteer.launch({
-        headless: true,
-        args: [`--proxy-server=${anonymizedProxy}`],
-        ignoreHTTPSErrors: true
-    });
-    return { browser, anonymizedProxy };
+// 从环境变量获取配置
+const PROXY_CUSTOMER = process.env.PROXY_CUSTOMER;
+const PROXY_PASSWORD = process.env.PROXY_PASSWORD;
+
+// 验证环境变量是否存在
+if (!PROXY_CUSTOMER || !PROXY_PASSWORD) {
+    console.error('错误: 环境变量未设置。请确保 .env 文件中包含 PROXY_CUSTOMER 和 PROXY_PASSWORD');
+    process.exit(1);
 }
 
-async function testProxyPort(port, url) {
-    const startTime = Date.now();
-    const proxyWithPort = `cn-pr.oxylabs.io:${port}`;
+const getAddress = "https://dps.kdlapi.com/api/getdps/?secret_id=o0oeluds2tkht8n2pfj5&signature=lnuv3xk2i06gotnv8b17tzcy2murv1kr&num=1&pt=1&format=text&sep=1";
+const url = 'https://dev.kdlapi.com/testproxy';
+const headers = {
+    'Accept-Encoding': 'gzip'
+};
+let proxy_ip = '';
+let proxy_port = '';
+
+const base64 = Buffer.from(PROXY_CUSTOMER + ":" + PROXY_PASSWORD).toString("base64");
+
+console.log('开始获取代理IP...');
+console.log('代理用户:', PROXY_CUSTOMER);
+console.log('代理密码:', PROXY_PASSWORD.substring(0, 2) + '****');
+
+https.get(getAddress, {
+    headers: {
+        'Authorization': 'Basic ' + base64
+    }
+}, (res) => {
+    let stream = res;
+
+    if (res.headers['content-encoding'] && res.headers['content-encoding'].toLowerCase() === 'gzip') {
+        stream = stream.pipe(zlib.createGunzip());
+    }
+
+    stream.on('data', (chunk) => {
+        const data = chunk.toString();
+        const parts = data.split(':');
+        proxy_ip = parts[0];
+        proxy_port = parts[1];
+
+        console.log(`获取到代理: ${proxy_ip}:${proxy_port}`);
+
+        (async () => {
+            let browser;
+            try {
+                console.log('启动浏览器...');
+                browser = await puppeteer.launch({
+                    headless: false,
+                    args: [
+                        `--proxy-server=${proxy_ip}:${proxy_port}`,
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox'
+                    ]
+                });
+
+                // 打开一个新页面
+                const page = await browser.newPage();
+
+                // 设置headers
+                await page.setExtraHTTPHeaders(headers);
+
+                // 使用环境变量中的认证信息
+                await page.authenticate({
+                    username: PROXY_CUSTOMER, 
+                    password: PROXY_PASSWORD
+                });
+
+                // 访问目标网页
+                console.log('正在访问目标页面...');
+                const response = await page.goto(url, {
+                    waitUntil: 'networkidle0',
+                    timeout: 30000
+                });
+
+                console.log(`页面状态码: ${response.status()}`);
+
+            } catch (error) {
+                console.error('发生错误:', error);
+            } finally {
+                if (browser) {
+                    await browser.close();
+                }
+            }
+        })();
+    });
+}).on('error', (err) => {
+    console.error('Error sending request to getAddress:', err);
+});
+async function testProxy() {
+    // 快代理API配置
+    const getAddress = "https://dps.kdlapi.com/api/getdps/?secret_id=o0oeluds2tkht8n2pfj5&signature=lnuv3xk2i06gotnv8b17tzcy2murv1kr&num=1&pt=1&format=text&sep=1";
     
+    console.log('\n=== 代理配置信息 ===');
+    console.log('用户名:', PROXY_CUSTOMER);
+    console.log('密码:', PROXY_PASSWORD.substring(0, 2) + '****');
+
+    // 获取代理IP
+    const proxyInfo = await new Promise((resolve, reject) => {
+        https.get(getAddress, {
+            headers: {
+                'Authorization': 'Basic ' + Buffer.from(PROXY_CUSTOMER + ":" + PROXY_PASSWORD).toString("base64")
+            }
+        }, (res) => {
+            let stream = res;
+
+            if (res.headers['content-encoding'] && res.headers['content-encoding'].toLowerCase() === 'gzip') {
+                stream = stream.pipe(zlib.createGunzip());
+            }
+
+            stream.on('data', (chunk) => {
+                const data = chunk.toString();
+                const [ip, port] = data.split(':');
+                resolve({ ip, port });
+            });
+        }).on('error', reject);
+    });
+
+    console.log('\n=== 代理测试开始 ===');
+    console.log(`获取到代理: ${proxyInfo.ip}:${proxyInfo.port}`);
+
     try {
-        console.log(`正在测试端口 ${port}...`);
-        const { browser, anonymizedProxy } = await launchBrowserWithProxy(proxyWithPort);
+        // 启动浏览器
+        const browser = await puppeteer.launch({
+            headless: false,  // 设为false以便观察
+            args: [
+                `--proxy-server=${proxyInfo.ip}:${proxyInfo.port}`,
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ]
+        });
+
+        // 创建新页面
         const page = await browser.newPage();
 
-        try {
-            await page.setRequestInterception(true);
-            page.on('request', (request) => {
-                const resourceType = request.resourceType();
-                if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-                    request.abort();
-                } else {
-                    request.continue();
-                }
-            });
-
-            console.log(`端口 ${port}: 开始访问目标网站...`);
-            await page.goto('https://kd.nsfc.cn/finalProjectInit?advanced=true', {
-                waitUntil: 'domcontentloaded',
-                timeout: 20000
-            });
-            
-            const responseTime = Date.now() - startTime;
-            console.log(`端口 ${port}: 成功访问，耗时 ${responseTime}ms`);
-            
-            await browser.close();
-            await proxyChain.closeAnonymizedProxy(anonymizedProxy, true);
-            
-            return {
-                port,
-                success: true,
-                responseTime,
-                error: null
-            };
-        } catch (error) {
-            console.error(`端口 ${port} 访问失败:`, error.message);
-            await browser.close();
-            await proxyChain.closeAnonymizedProxy(anonymizedProxy, true);
-            throw error;
-        }
-    } catch (error) {
-        console.error(`端口 ${port} 代理设置失败:`, error.message);
-        return {
-            port,
-            success: false,
-            responseTime: null,
-            error: error.message
-        };
-    }
-}
-
-async function saveResultsToFile(successfulPorts) {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `proxy-test-results-${timestamp}.txt`;
-    
-    let content = '代理端口测试结果报告\n';
-    content += '===================\n\n';
-    content += `测试时间: ${new Date().toLocaleString()}\n`;
-    content += `成功端口数量: ${successfulPorts.length}\n\n`;
-    content += '详细结果 (按响应时间排序):\n';
-    content += '端口号\t总响应时间\t代理测试时间\t目标网站响应时间\n';
-    
-    successfulPorts.forEach(({port, totalResponseTime, proxyTestTime, targetTestTime}) => {
-        content += `${port}\t${totalResponseTime}ms\t${proxyTestTime}ms\t${targetTestTime}ms\n`;
-    });
-    
-    await fs.writeFile(filename, content, 'utf8');
-    console.log(`\n测试结果已保存到文件: ${filename}`);
-}
-
-async function testPortRange(startPort, endPort, url, batchSize = 20) {
-    const results = [];
-    const successfulPorts = [];
-    const totalPorts = endPort - startPort + 1;
-    const totalBatches = Math.ceil(totalPorts / batchSize);
-    
-    console.log(`开始并行测试端口 ${startPort} 到 ${endPort}...`);
-    console.log(`总共 ${totalBatches} 批，每批 ${batchSize} 个端口\n`);
-    
-    for (let i = 0; i < totalPorts; i += batchSize) {
-        const batchNumber = Math.floor(i / batchSize) + 1;
-        const batch = [];
-        const batchEnd = Math.min(i + batchSize, totalPorts);
-        
-        for (let j = 0; j < batchEnd - i; j++) {
-            const port = startPort + i + j;
-            batch.push(testProxyPort(port, url));
-        }
-        
-        console.log(`\n开始测试第 ${batchNumber}/${totalBatches} 批 (端口 ${startPort + i} - ${startPort + batchEnd - 1})`);
-        
-        const batchResults = await Promise.all(batch);
-        
-        // 处理本批次结果
-        const batchSuccessful = [];
-        let batchFailures = 0;
-        
-        batchResults.forEach(result => {
-            if (result.success) {
-                batchSuccessful.push({
-                    port: result.port,
-                    responseTime: result.responseTime
-                });
-                successfulPorts.push({
-                    port: result.port,
-                    responseTime: result.responseTime
-                });
-            } else {
-                batchFailures++;
-            }
+        // 设置代理认证
+        await page.authenticate({
+            username: PROXY_CUSTOMER,
+            password: PROXY_PASSWORD
         });
-        
-        // 输出本批次报告
-        console.log(`\n第 ${batchNumber} 批测试完成:`);
-        console.log(`- 成功: ${batchSuccessful.length} 个端口`);
-        console.log(`- 失败: ${batchFailures} 个端口`);
-        if (batchSuccessful.length > 0) {
-            console.log('本批次成功端口:');
-            batchSuccessful
-                .sort((a, b) => a.responseTime - b.responseTime)
-                .forEach(({port, responseTime}) => {
-                    console.log(`  端口 ${port}: 响应时间 ${responseTime}ms`);
-                });
-        }
 
-        // 强制执行垃圾回收
-        if (global.gc) {
-            global.gc();
-        }
+        // 测试步骤1: 验证IP
+        console.log('\n1. 验证代理IP...');
+        await page.goto('http://httpbin.org/ip', {
+            waitUntil: 'networkidle0',
+            timeout: 30000
+        });
+        const ipInfo = await page.evaluate(() => {
+            return document.body.textContent;
+        });
+        console.log('当前IP信息:', ipInfo);
+
+        // 测试步骤2: 访问目标网站
+        console.log('\n2. 测试目标网站访问...');
+        const targetUrl = 'https://kd.nsfc.cn/finalProjectInit?advanced=true';
+        const startTime = Date.now();
         
-        // 在批次之间添加短暂延迟，让系统有时间清理资源
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        const response = await page.goto(targetUrl, {
+            waitUntil: 'networkidle0',
+            timeout: 30000
+        });
+
+        const loadTime = Date.now() - startTime;
+        console.log(`页面加载时间: ${loadTime}ms`);
+        console.log(`状态码: ${response.status()}`);
+        
+        // 获取页面标题
+        const title = await page.title();
+        console.log(`页面标题: ${title}`);
+
+        // 等待一段时间以便观察
+        await new Promise(resolve => setTimeout(resolve, 5000));
+
+        // 关闭浏览器
+        await browser.close();
+
+        console.log('\n=== 测试结果 ===');
+        console.log('✅ 测试成功完成');
+        console.log(`代理地址: ${proxyInfo.ip}:${proxyInfo.port}`);
+        console.log(`页面加载时间: ${loadTime}ms`);
+        console.log(`状态码: ${response.status()}`);
+
+    } catch (error) {
+        console.error('\n=== 测试失败 ===');
+        console.error('错误信息:', error.message);
+        console.error(`使用的代理: ${proxyInfo.ip}:${proxyInfo.port}`);
     }
-    
-    // 最终报告
-    console.log('\n\n=== 最终测试结果汇总 ===');
-    console.log(`总测试端口数: ${totalPorts}`);
-    console.log(`成功端口数: ${successfulPorts.length}`);
-    console.log(`失败端口数: ${totalPorts - successfulPorts.length}`);
-    
-    if (successfulPorts.length > 0) {
-        console.log('\n所有成功端口 (按响应时间排序):');
-        successfulPorts
-            .sort((a, b) => a.responseTime - b.responseTime)
-            .forEach(({port, responseTime}) => {
-                console.log(`端口 ${port}: ${responseTime}ms`);
-            });
-    }
-    
-    return successfulPorts;
 }
 
-// 修改主函数
-(async () => {
-    try {
-        const url = 'https://kd.nsfc.cn/finalProjectInit?advanced=true';
-        const startPort = 30001;
-        const endPort = 39999;
-        const batchSize = 15;  // 减小批次大小
-        
-        console.log('开始测试...');
-        await testPortRange(startPort, endPort, url, batchSize);
-    } catch (error) {
-        console.error('程序执行出错:', error);
-    }
-})();
-
-process.on('SIGINT', () => {
-    console.log('\n程序已终止');
-    process.exit(0);
-});
+// 运行测试
+testProxy().catch(console.error);

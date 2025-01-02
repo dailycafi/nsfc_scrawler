@@ -15,6 +15,7 @@
     "csv-writer": "^1.6.0",
     "dotenv": "^16.4.7",
     "https-proxy-agent": "^7.0.6",
+    "kdl": "^1.2.5",
     "node-fetch": "^2.7.0",
     "prompt-sync": "^4.2.0",
     "proxy-chain": "^2.5.6",
