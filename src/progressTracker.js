@@ -14,7 +14,9 @@ class ProgressTracker {
             lastSubCode: null,
             lastFundType: null,
             totalRecords: 0,
-            errorPoints: new Set()
+            errorPoints: [],
+            completedItems: new Set(),
+            totalCount: 0
         };
         this.subCodesMap = new Map();
     }
@@ -110,15 +112,17 @@ class ProgressTracker {
     }
 
     async markError(subCode, fundType) {
-        if (!this.progress.errorPoints) {
+        if (!Array.isArray(this.progress.errorPoints)) {
             this.progress.errorPoints = [];
         }
-
-        const errorPoint = `${subCode}-${fundType}`;
-        if (!this.progress.errorPoints.includes(errorPoint)) {
-            this.progress.errorPoints.push(errorPoint);
-        }
-
+        
+        const errorPoint = {
+            subCode,
+            fundType,
+            timestamp: new Date().toISOString()
+        };
+        
+        this.progress.errorPoints.push(errorPoint);
         await this.save();
     }
 

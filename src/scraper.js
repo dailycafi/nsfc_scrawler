@@ -705,13 +705,22 @@ async function runSearchByYear(page, year, options) {
                     await randomSleep(1000, 2000);
                 } catch (error) {
                     console.error(`[${year}] ${fundType}-${subCode} 处理失败:`, error);
-                    // 添加错误记录
-                    await tracker.markError(subCode, fundType);
+                    
+                    try {
+                        // 确保 markError 方法存在且正确初始化
+                        await tracker.markError(subCode, fundType);
+                    } catch (trackerError) {
+                        console.error('记录错误状态失败:', trackerError);
+                    }
                     
                     if (error.message.includes('net::') || error.message.includes('proxy')) {
                         if (onProxyError) {
-                            page = await onProxyError();
-                            await sleep(5000);
+                            try {
+                                page = await onProxyError();
+                                await sleep(5000);
+                            } catch (proxyError) {
+                                console.error('代理重置失败:', proxyError);
+                            }
                         }
                     }
                 }
