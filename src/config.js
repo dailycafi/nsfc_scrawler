@@ -17,7 +17,7 @@ const YEAR_PROXY_MAP = {
     2012: { id: 'lrps-06370', ip: '36.25.243.5', port: '11861', location: '邯郸市', isp: '联通' },
     2013: { id: 'lrps-06371', ip: '36.25.243.5', port: '10853', location: '南昌市', isp: '电信' },
     2014: { id: 'lrps-06372', ip: '36.25.243.5', port: '11865', location: '天津市', isp: '联通' },
-    2015: { id: 'lrps-06373', ip: '36.25.243.5', port: '11876', location: '运城市', isp: '联通' },
+    2015: { id: 'lrps-26367', ip: '36.25.243.5', port: '11839', location: '运城市', isp: '联通' },
     2016: { id: 'lrps-86383', ip: '36.25.243.5', port: '11921', location: '天津市', isp: '-' },
     2017: { id: 'lrps-06374', ip: '36.25.243.5', port: '10854', location: '抚州市', isp: '电信' },
     2018: { id: 'lrps-06375', ip: '36.25.243.5', port: '11885', location: '湛江市', isp: '移动' },
